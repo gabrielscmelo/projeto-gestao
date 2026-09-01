@@ -23,6 +23,17 @@ class AbaDiligencias:
         self.id_diligencia_sel = None
         self.contagem_secretarias = {}
         self._popup_contador = None
+        # Guarda a ordenação (coluna + direção) escolhida pelo usuário, para que
+        # ela seja reaplicada automaticamente após qualquer recarga da lista
+        # (cadastro, atualização, exclusão, conclusão), em vez de a lista voltar
+        # sempre para a ordem padrão por ID.
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        # Guarda o texto "puro" (sem seta ▲/▼) de cada cabeçalho de coluna,
+        # para poder remontar o texto com/sem indicador de ordenação.
+        self._col_headers = {}
+        self._toast_label = None
+        self._toast_after_id = None
         self.montar_aba()
 
     def _validar_input_diligencia(self, texto_novo):
@@ -74,6 +85,61 @@ class AbaDiligencias:
             col,
             command=lambda _col=col: self._ordenar_coluna(_col, not reverse)
         )
+
+        # Guarda a ordenação atual para que possa ser reaplicada depois que a
+        # lista for recarregada do banco (ver _reaplicar_ordenacao).
+        self._sort_coluna_atual = col
+        self._sort_reverse_atual = reverse
+        self._atualizar_estado_btn_filtro()
+        self._atualizar_headers_ordenacao()
+
+    def _atualizar_headers_ordenacao(self):
+        """
+        Reescreve o texto de todos os cabeçalhos, acrescentando uma seta
+        (▲ crescente / ▼ decrescente) apenas na coluna atualmente ordenada.
+        Assim, quem abre a tela depois de outra pessoa mexer na ordenação
+        consegue ver de imediato qual coluna e direção estão ativas.
+        """
+        for col, texto_base in self._col_headers.items():
+            if col == self._sort_coluna_atual:
+                seta = " ▼" if self._sort_reverse_atual else " ▲"
+                self.tab_dil_tree.heading(col, text=texto_base + seta)
+            else:
+                self.tab_dil_tree.heading(col, text=texto_base)
+
+    def _reaplicar_ordenacao(self):
+        """
+        Reaplica a última ordenação de coluna escolhida pelo usuário.
+        Deve ser chamada sempre que a Treeview for repopulada a partir do
+        banco (após cadastrar, atualizar, excluir ou concluir uma
+        diligência), pois o SELECT no banco não garante a ordem que o
+        usuário escolheu ao clicar em uma coluna.
+        """
+        if self._sort_coluna_atual is not None:
+            self._ordenar_coluna(self._sort_coluna_atual, self._sort_reverse_atual)
+
+    def _atualizar_estado_btn_filtro(self):
+        """
+        Reflete no botão de filtro/ordenação se há alguma ordenação de
+        coluna ativa (destacado) ou não (neutro).
+        """
+        if not hasattr(self, 'btn_filtro_ativo'):
+            return
+        if self._sort_coluna_atual is not None:
+            self.btn_filtro_ativo.configure(fg_color="#1f538d", hover_color="#14375e")
+        else:
+            self.btn_filtro_ativo.configure(fg_color="#454545", hover_color="#2b2b2b")
+
+    def dil_limpar_ordenacao(self):
+        """
+        Limpa a ordenação de coluna ativa, voltando a lista para a ordem
+        padrão (por ID) devolvida pelo banco.
+        """
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        self._atualizar_estado_btn_filtro()
+        self._atualizar_headers_ordenacao()
+        self.dil_listar()
 
     def _criar_popup_contador(self):
         """
@@ -154,62 +220,70 @@ class AbaDiligencias:
             self._preencher_popup_contador()
 
     def montar_aba(self):
-        self.f_form_dil = ctk.CTkFrame(self.master, width=320)
+        self.f_form_dil = ctk.CTkFrame(self.master, width=230)
         self.f_form_dil.pack(side="left", fill="y", padx=10, pady=10)
+        # Impede que o frame se redimensione para caber o conteúdo interno,
+        # garantindo que a largura definida acima (230) seja respeitada.
+        self.f_form_dil.pack_propagate(False)
 
-        ctk.CTkLabel(self.f_form_dil, text="Lotação Diligência", font=("Arial", 18, "bold")).pack(pady=15)
+        # Faixa reservada só para o aviso de "Diligência atualizada/cadastrada".
+        # Tem altura fixa (pack_propagate(False)) para que o espaço já exista
+        # mesmo com o aviso escondido — assim, quando ele aparece, ocupa essa
+        # faixa própria em vez de flutuar por cima do título abaixo.
+        self.f_toast_dil = ctk.CTkFrame(self.f_form_dil, fg_color="transparent", height=32)
+        self.f_toast_dil.pack(fill="x", padx=10, pady=(8, 0))
+        self.f_toast_dil.pack_propagate(False)
 
-        self.e_saj_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SAJ (ex: 2025.01.24)", width=260)
+        ctk.CTkLabel(self.f_form_dil, text="Lotação Diligência", font=("Arial", 18, "bold")).pack(pady=5)
+
+        self.e_saj_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SAJ (ex: 2025.01.24)", width=195)
         self.e_saj_dil.pack(pady=8)
         self.e_saj_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_saj_dil, formatar_saj))
 
-        self.e_sei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SEI (ex: 05.123/2024-01)", width=260)
+        self.e_sei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SEI (ex: 05.123/2024-01)", width=195)
         self.e_sei_dil.pack(pady=8)
         self.e_sei_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_sei_dil, formatar_sei))
 
         cmd_valida_dil = (self.master.register(self._validar_input_diligencia), '%P')
-        self.e_num_dil = ctk.CTkEntry(
-            self.f_form_dil, 
-            placeholder_text="Diligência (ex: 24 ou S/Nº)", 
-            width=260,
-            validate="key",
-            validatecommand=cmd_valida_dil
-        )
+        self.e_num_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Diligência (ex: 24 ou S/Nº)", width=195)
         self.e_num_dil.pack(pady=8)
         self.e_num_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_num_dil, formatar_diligencia))
 
-        self.e_sec_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Secretaria", width=260)
+        self.e_sec_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Secretaria", width=195)
         self.e_sec_dil.pack(pady=8)
 
-        self.e_caminho_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Caminho / Pasta", width=260)
+        self.e_caminho_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Caminho / Pasta", width=195)
         self.e_caminho_dil.pack(pady=8)
 
-        self.e_idsei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Id SEI (documento da diligência)", width=260)
+        self.e_idsei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Id SEI (documento da diligência)", width=195)
         self.e_idsei_dil.pack(pady=8)
 
         # COMBOBOX DA CATEGORIA
         self.cmb_categoria = ctk.CTkComboBox(
             self.f_form_dil, 
             values=["Patrimonial e Urbanismo", "Desapropriação", "Geral"], 
-            width=260,
+            width=195,
             state="readonly"
         )
         self.cmb_categoria.set("Geral")
         self.cmb_categoria.pack(pady=8)
 
-        self.e_envio_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Data Envio (DD/MM/AAAA)", width=260)
+        self.e_envio_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Data Envio (DD/MM/AAAA)", width=195)
         self.e_envio_dil.pack(pady=8)
         self.e_envio_dil.bind("<KeyRelease>", aplicar_mascara_data_auto)
 
-        self.e_prazo_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Prazo (DD/MM/AAAA)", width=260)
+        self.e_prazo_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Prazo (DD/MM/AAAA)", width=195)
         self.e_prazo_dil.pack(pady=8)
         self.e_prazo_dil.bind("<KeyRelease>", aplicar_mascara_data_auto)
 
-        self.btn_salvar_dil = ctk.CTkButton(self.f_form_dil, text="Salvar Novo", command=self.dil_cadastrar, fg_color="green", hover_color="darkgreen", width=260)
+        self.btn_salvar_dil = ctk.CTkButton(self.f_form_dil, text="Salvar Novo", command=self.dil_cadastrar, fg_color="green", hover_color="darkgreen", width=195)
         self.btn_salvar_dil.pack(pady=10)
-        self.btn_atualizar_dil = ctk.CTkButton(self.f_form_dil, text="Atualizar Selecionado", command=self.dil_atualizar, fg_color="orange", hover_color="#b37400", width=260)
-        self.btn_atualizar_dil.pack(pady=5)
-        ctk.CTkButton(self.f_form_dil, text="Limpar Campos", command=self.dil_limpar_campos, fg_color="gray", width=260).pack(pady=5)
+
+        f_btns_dil = ctk.CTkFrame(self.f_form_dil, fg_color="transparent")
+        f_btns_dil.pack(pady=5)
+        self.btn_atualizar_dil = ctk.CTkButton(f_btns_dil, text="Atualizar", command=self.dil_atualizar, fg_color="orange", hover_color="#b37400", width=90)
+        self.btn_atualizar_dil.pack(side="left", padx=(0, 5))
+        ctk.CTkButton(f_btns_dil, text="Limpar Campos", command=self.dil_limpar_campos, fg_color="gray", width=90).pack(side="left")
 
         self.f_lista_dil = ctk.CTkFrame(self.master)
         self.f_lista_dil.pack(side="right", fill="both", expand=True, padx=(0, 10), pady=10)
@@ -217,18 +291,35 @@ class AbaDiligencias:
         f_pesq = ctk.CTkFrame(self.f_lista_dil, fg_color="transparent")
         f_pesq.pack(fill="x", padx=10, pady=10)
         
-        ctk.CTkLabel(f_pesq, text="Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
-        self.e_pesq_dil = ctk.CTkEntry(f_pesq, placeholder_text="Digite SAJ, SEI, Diligência, Caminho...", width=240)
+        ctk.CTkLabel(f_pesq, text="Buscar em:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
+
+        # Mapa: rótulo exibido -> coluna real no banco de dados.
+        # "Todos os Campos" preserva o comportamento antigo (busca em várias colunas
+        # ao mesmo tempo); as demais opções restringem a busca a uma única coluna,
+        # evitando que um valor pesquisado "bata" por engano em SAJ/SEI/Diligência
+        # ao mesmo tempo por serem parecidos entre si.
+        self.map_campo_pesq_dil = {
+            "Todos os Campos": None,
+            "SAJ": "saj",
+            "SEI": "sei",
+            "DILIGÊNCIA": "diligencia",
+            "SECRETARIA": "secretaria",
+        }
+        self.cmb_campo_pesq_dil = ctk.CTkComboBox(
+            f_pesq,
+            values=list(self.map_campo_pesq_dil.keys()),
+            width=150,
+            state="readonly",
+            command=lambda e: self.dil_listar()
+        )
+        self.cmb_campo_pesq_dil.set("Todos os Campos")
+        self.cmb_campo_pesq_dil.pack(side="left", padx=(0, 10))
+
+        self.e_pesq_dil = ctk.CTkEntry(f_pesq, placeholder_text="Digite o valor para buscar...", width=200)
         self.e_pesq_dil.pack(side="left", fill="x", expand=True, padx=5)
         
         self.debouncer_dil = Debouncer(self.e_pesq_dil)
         self.debouncer_dil.bind(self.dil_listar)
-
-        ctk.CTkLabel(f_pesq, text="Ano:", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 5))
-        anos_opcoes = ["Todos"] + [str(y) for y in range(datetime.now().year, 2019, -1)]
-        self.cmb_ano_dil = ctk.CTkComboBox(f_pesq, values=anos_opcoes, width=90, command=lambda e: self.dil_listar())
-        self.cmb_ano_dil.set("Todos")
-        self.cmb_ano_dil.pack(side="left", padx=5)
 
         # Contador de diligências ativas (reflete a listagem/filtro atual).
         # Ao passar o mouse por cima, mostra um pop-up com a quantidade por Secretaria.
@@ -241,12 +332,44 @@ class AbaDiligencias:
         self.lbl_contador_dil.bind("<Enter>", self._mostrar_popup_contador)
         self.lbl_contador_dil.bind("<Leave>", self._esconder_popup_contador)
 
+        # Botão com símbolo de ordenação: fica destacado (azul) quando existe uma
+        # ordenação de coluna ativa (ex.: por Prazo) e, ao ser clicado, limpa
+        # essa ordenação, voltando a lista para a ordem padrão por ID.
+        # Renomeado de "Filtro" para "Ordenação" para não ser confundido com o
+        # botão "Limpar Busca/Ano" abaixo, que limpa a busca/ano em vez disso.
+        self.btn_filtro_ativo = ctk.CTkButton(
+            f_pesq, text="🔽", width=50,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=self.dil_limpar_ordenacao
+        )
+        self.btn_filtro_ativo.pack(side="right", padx=(10, 0))
+
+        ctk.CTkButton(
+            f_pesq, text="🧹 Limpar", width=100,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=self.dil_limpar_busca
+        ).pack(side="right", padx=(10, 0))
+
+        # Label discreto de "carregando", mostrado apenas enquanto a consulta
+        # ao banco (em thread separada) ainda não retornou.
+        self.lbl_carregando_dil = ctk.CTkLabel(f_pesq, text="", text_color="gray", font=("Arial", 11))
+        self.lbl_carregando_dil.pack(side="left", padx=(5, 0))
+
         # COLUNAS DO TREEVIEW
         cols = ("id", "saj", "sei", "diligencia", "categoria", "secretaria", "caminho", "id_sei", "envio", "prazo", "status", "enviado_por")
-        self.tab_dil_tree = ttk.Treeview(self.f_lista_dil, columns=cols, show="headings", selectmode="browse")
-        
+
+        # Container que agrupa a tabela e a barra de rolagem vertical. Precisa
+        # ser criado ANTES do Treeview e ser o pai real dele (não apenas o
+        # destino do pack via "in_"), senão o gerenciador de geometria não
+        # calcula corretamente o espaço da tabela e ela some da tela.
+        f_tree_dil = ctk.CTkFrame(self.f_lista_dil, fg_color="transparent")
+        f_tree_dil.pack(pady=10, padx=10, fill="both", expand=True)
+
+        self.tab_dil_tree = ttk.Treeview(f_tree_dil, columns=cols, show="headings", selectmode="browse")
+
         headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "CATEGORIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO", "STATUS", "ENVIADO POR")
-        
+        self._col_headers = dict(zip(cols, headers))
+
         # Associação de evento de ordenação ao clicar no título de cada coluna
         for c, h in zip(cols, headers):
             self.tab_dil_tree.heading(
@@ -269,8 +392,18 @@ class AbaDiligencias:
         self.tab_dil_tree.column("enviado_por", width=90)
 
         self.tab_dil_tree.tag_configure("vencido", foreground="#ff4d4d")
+        # Diligências com 0 a 3 dias restantes até o prazo: destaque intermediário
+        # (laranja/amarelo) para chamar atenção antes que virem "Em atraso".
+        self.tab_dil_tree.tag_configure("quase_vencendo", foreground="#ffb300")
 
-        self.tab_dil_tree.pack(pady=10, padx=10, fill="both", expand=True)
+        scroll_dil = ttk.Scrollbar(f_tree_dil, orient="vertical", command=self.tab_dil_tree.yview)
+        self.tab_dil_tree.configure(yscrollcommand=scroll_dil.set)
+
+        # A barra precisa ser empacotada ANTES da tabela: como a tabela usa
+        # expand=True, se ela for empacotada primeiro consome todo o espaço
+        # do container e não sobra nada (largura zero) para a barra à direita.
+        scroll_dil.pack(side="right", fill="y")
+        self.tab_dil_tree.pack(side="left", fill="both", expand=True)
 
         self.tab_dil_tree.bind("<<TreeviewSelect>>", self.dil_carregar_campos)
         self.tab_dil_tree.bind("<Double-1>", self.dil_carregar_campos)
@@ -280,9 +413,66 @@ class AbaDiligencias:
         ctk.CTkButton(f_act, text="✔ Concluir", command=self.dil_concluir, fg_color="#1f538d", hover_color="#14375e", width=110).pack(side="left", padx=5)
         ctk.CTkButton(f_act, text="Ver Concluídas", command=self.dil_abrir_concluidas, fg_color="#454545", hover_color="#2b2b2b", width=110).pack(side="left", padx=5)
         ctk.CTkButton(f_act, text="📄 Gerar PDF", command=lambda: exportar_treeview_pdf(self.tab_dil_tree, "Relatório de Diligências"), fg_color="#2e7d32", hover_color="#1b5e20", width=110).pack(side="left", padx=5)
-        ctk.CTkButton(f_act, text="✖ Excluir", command=self.dil_excluir, fg_color="red", hover_color="darkred", width=110).pack(side="right", padx=5)
+        ctk.CTkButton(f_act, text="✖ Excluir (Del)", command=self.dil_excluir, fg_color="red", hover_color="darkred", width=110).pack(side="right", padx=5)
+
+        # Atalhos de teclado: Delete exclui o item selecionado quando o foco
+        # está na tabela (não interfere na edição de texto nos campos).
+        self.tab_dil_tree.bind("<Delete>", lambda e: self.dil_excluir())
+
+        # Enter em qualquer campo do formulário salva (se nada selecionado)
+        # ou atualiza (se uma linha estiver selecionada); Esc limpa os campos.
+        # Reduz a dependência do mouse para quem cadastra várias diligências
+        # em sequência.
+        for campo in (
+            self.e_saj_dil, self.e_sei_dil, self.e_num_dil, self.e_sec_dil,
+            self.e_caminho_dil, self.e_idsei_dil, self.e_envio_dil, self.e_prazo_dil,
+        ):
+            campo.bind("<Return>", self._acionar_atalho_enter)
+            campo.bind("<Escape>", lambda e: self.dil_limpar_campos())
 
         self.dil_listar()
+
+    def _acionar_atalho_enter(self, event=None):
+        """
+        Atalho de teclado (Enter): salva uma diligência nova se nenhuma
+        estiver selecionada, ou atualiza a selecionada, sem precisar clicar
+        no botão correspondente.
+        """
+        if self.id_diligencia_sel:
+            self.dil_atualizar()
+        else:
+            self.dil_cadastrar()
+
+    def dil_limpar_busca(self):
+        """
+        Limpa apenas os filtros de busca (texto + campo pesquisado),
+        sem mexer na ordenação de coluna — que tem seu próprio botão
+        ("🔽 Ordenação"), para não confundir os dois tipos de "limpeza".
+        """
+        self.e_pesq_dil.delete(0, 'end')
+        self.cmb_campo_pesq_dil.set("Todos os Campos")
+        self.dil_listar()
+
+    def _mostrar_toast(self, mensagem, cor="#2e7d32"):
+        """
+        Feedback leve e não-modal (some sozinho), usado nas ações mais
+        repetitivas (salvar/atualizar) para não travar a tela com um
+        messagebox a cada clique. Ações destrutivas (excluir) continuam
+        usando confirmação modal, propositalmente.
+        """
+        if self._toast_label is None:
+            self._toast_label = ctk.CTkLabel(
+                self.f_toast_dil, text="", corner_radius=8,
+                fg_color=cor, text_color="white", font=("Arial", 12, "bold"),
+            )
+
+        if self._toast_after_id is not None:
+            self.master.after_cancel(self._toast_after_id)
+
+        self._toast_label.configure(text=mensagem, fg_color=cor)
+        self._toast_label.place(relx=0.5, rely=0.5, anchor="center")
+        self._toast_label.lift()
+        self._toast_after_id = self.master.after(2200, self._toast_label.place_forget)
 
     def aplicar_mascara_campo(self, widget, funcao_mascara):
         val = widget.get()
@@ -320,6 +510,10 @@ class AbaDiligencias:
             messagebox.showwarning("Aviso", "O SAJ é obrigatório!")
             return
 
+        if not dil:
+            messagebox.showwarning("Aviso", "O campo Diligência é obrigatório!")
+            return
+
         envio_fmt, e_err = formatar_e_validar_data(self.e_envio_dil.get())
         if e_err: 
             messagebox.showwarning("Data Envio", e_err)
@@ -337,7 +531,7 @@ class AbaDiligencias:
                 sql = "INSERT INTO tb_gestao (saj, sei, diligencia, categoria, secretaria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
                 cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, getattr(self.app, 'usuario_atual', 'N/A')))
                 con.commit()
-                messagebox.showinfo("Sucesso", "Diligência cadastrada!")
+                self._mostrar_toast("✔ Diligência cadastrada!")
                 self.dil_limpar_campos()
                 self.dil_listar()
                 if hasattr(self.app, 'aba_cobranca'): 
@@ -354,7 +548,12 @@ class AbaDiligencias:
             self.tab_dil_tree.delete(item)
 
         busca = self.e_pesq_dil.get().strip()
-        ano = self.cmb_ano_dil.get()
+        campo_rotulo = self.cmb_campo_pesq_dil.get()
+        coluna_busca = self.map_campo_pesq_dil.get(campo_rotulo)
+
+        # Numa base grande ou conexão lenta, a query pode demorar; sem esse
+        # aviso o usuário pode achar que o clique não funcionou e insistir.
+        self.lbl_carregando_dil.configure(text="🔄 Carregando...")
 
         def tarefa_banco():
             con = obter_conexao()
@@ -365,12 +564,16 @@ class AbaDiligencias:
                     params = []
 
                     if busca:
-                        query += " AND (saj LIKE %s OR sei LIKE %s OR diligencia LIKE %s OR secretaria LIKE %s OR categoria LIKE %s OR caminho LIKE %s)"
-                        lk = f"%{busca}%"
-                        params.extend([lk, lk, lk, lk, lk, lk])
-                    if ano and ano != "Todos":
-                        query += " AND (YEAR(data_envio) = %s OR YEAR(prazo) = %s)"
-                        params.extend([ano, ano])
+                        if coluna_busca:
+                            # Coluna específica selecionada: busca restrita a ela,
+                            # evitando ambiguidade entre SAJ/SEI/Diligência parecidos.
+                            query += f" AND {coluna_busca} LIKE %s"
+                            params.append(f"%{busca}%")
+                        else:
+                            # "Todos os Campos": mantém a busca ampla de antes.
+                            query += " AND (saj LIKE %s OR sei LIKE %s OR diligencia LIKE %s OR secretaria LIKE %s OR categoria LIKE %s OR caminho LIKE %s)"
+                            lk = f"%{busca}%"
+                            params.extend([lk, lk, lk, lk, lk, lk])
 
                     cur.execute(query, tuple(params))
                     linhas = cur.fetchall()
@@ -391,8 +594,15 @@ class AbaDiligencias:
             env_str = row['data_envio'].strftime('%d/%m/%Y') if hasattr(row['data_envio'], 'strftime') else (row['data_envio'] or "")
             ex_pz = row['prazo'].strftime('%d/%m/%Y') if hasattr(row['prazo'], 'strftime') else pz_str
             st, dias = calcular_status_diligencia(pz_str)
-            
-            tags_item = ("vencido",) if st == "Em atraso" else ()
+
+            if st == "Em atraso":
+                tags_item = ("vencido",)
+            elif isinstance(dias, int) and 0 <= dias <= 3:
+                # Diligências a 0-3 dias do prazo: destaque intermediário para
+                # priorizar visualmente antes que virem "Em atraso".
+                tags_item = ("quase_vencendo",)
+            else:
+                tags_item = ()
 
             cat_str = row.get('categoria') or "Geral"
             sec_str = row.get('secretaria') or "-"
@@ -413,6 +623,14 @@ class AbaDiligencias:
                 f"{st} ({dias}d)", 
                 row.get('usuario_criacao') or "N/A"
             ), tags=tags_item)
+
+        # Reaplica a ordenação de coluna que o usuário havia escolhido (ex.:
+        # por Prazo), já que o SELECT do banco devolve as linhas por ID e,
+        # sem isso, qualquer recarga (cadastro/atualização/exclusão/conclusão)
+        # perderia a ordenação e voltaria para a ordem padrão.
+        self._reaplicar_ordenacao()
+
+        self.lbl_carregando_dil.configure(text="")
 
     def dil_carregar_campos(self, event=None):
         sel = self.tab_dil_tree.selection()
@@ -468,6 +686,14 @@ class AbaDiligencias:
         id_sei = self.e_idsei_dil.get().strip()
         categoria = self.cmb_categoria.get()
 
+        if not saj:
+            messagebox.showwarning("Aviso", "O SAJ é obrigatório!")
+            return
+
+        if not dil:
+            messagebox.showwarning("Aviso", "O campo Diligência é obrigatório!")
+            return
+
         envio_fmt, e_err = formatar_e_validar_data(self.e_envio_dil.get())
         if e_err: 
             messagebox.showwarning("Data Envio", e_err)
@@ -485,7 +711,7 @@ class AbaDiligencias:
                 sql = "UPDATE tb_gestao SET saj=%s, sei=%s, diligencia=%s, categoria=%s, secretaria=%s, caminho=%s, `Id SEI`=%s, data_envio=%s, prazo=%s WHERE id=%s"
                 cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, self.id_diligencia_sel))
                 con.commit()
-                messagebox.showinfo("Sucesso", "Diligência atualizada com sucesso!")
+                self._mostrar_toast("✔ Diligência atualizada!")
                 self.dil_limpar_campos()
                 self.dil_listar()
                 if hasattr(self.app, 'aba_cobranca'): 

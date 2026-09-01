@@ -7,6 +7,7 @@ import mysql.connector
 from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from database.connection import obter_conexao
+from config.settings import config as CONFIG  # já vem descriptografado (config.ini.enc)
 
 # Configurações globais
 pyautogui.PAUSE = 0.2
