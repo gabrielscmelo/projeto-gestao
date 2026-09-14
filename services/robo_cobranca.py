@@ -137,7 +137,7 @@ def _fechar_janela_pdf(pagina_pdf, callback_log=None):
     return False
 
 
-def baixar_pdf_documento(page, num_sei, id_dil=None, callback_log=None):
+def baixar_pdf_documento(page, num_sei, id_dil=None, num_saj=None, callback_log=None):
     """
     Clica no ícone vermelho 'PDF' da barra de ferramentas do processo/documento no SEI.
 
@@ -230,7 +230,9 @@ def baixar_pdf_documento(page, num_sei, id_dil=None, callback_log=None):
     caminho_arquivo = None
     if download:
         sufixo_id = f"_{id_dil}" if id_dil is not None else ""
-        nome_arquivo = f"despacho_{str(num_sei).replace('/', '-')}{sufixo_id}.pdf"
+        num_saj_str = str(num_saj).strip() if num_saj else ""
+        base_nome = num_saj_str if num_saj_str else str(num_sei)
+        nome_arquivo = f"despacho_{base_nome.replace('/', '-')}{sufixo_id}.pdf"
         caminho_arquivo = os.path.join(PASTA_TEMP_PDF, nome_arquivo)
         download.save_as(caminho_arquivo)
         registrar_log(f"  ✅ [SEI] PDF baixado com sucesso: {caminho_arquivo}", callback_log)
@@ -240,7 +242,7 @@ def baixar_pdf_documento(page, num_sei, id_dil=None, callback_log=None):
     return caminho_arquivo
 
 
-def processar_fluxo_completo_sei(page, num_sei, num_diligencia, secretaria, caminho, usuario_sei, senha_sei, id_sei="", id_dil=None, callback_log=None):
+def processar_fluxo_completo_sei(page, num_sei, num_diligencia, secretaria, caminho, usuario_sei, senha_sei, id_sei="", id_dil=None, num_saj=None, callback_log=None):
     """Executa a rotina completa no SEI garantindo salvamento e encaminhamento corretos."""
     registrar_log(f"  [SEI] Abrindo processo: {num_sei}", callback_log)
 
@@ -513,7 +515,7 @@ Alguma informação acerca desta demanda?</p>
     # DOWNLOAD DO PDF DO DESPACHO (ícone vermelho "PDF" na barra do processo)
     # ----------------------------------------------------------------------
     try:
-        baixar_pdf_documento(page, num_sei=num_sei, id_dil=id_dil, callback_log=callback_log)
+        baixar_pdf_documento(page, num_sei=num_sei, id_dil=id_dil, num_saj=num_saj, callback_log=callback_log)
     except Exception as ex:
         registrar_log(f"  ⚠️ [SEI] Não foi possível baixar o PDF do despacho: {ex}", callback_log)
 
@@ -715,6 +717,7 @@ def iniciar_automacao_completa(usuario_sei, senha_sei, usuario_app="Robô", dias
 
             for item in diligencias:
                 num_sei = item.get("sei")
+                num_saj = item.get("saj")
                 id_dil = item.get("id")
                 secretaria = item.get("secretaria", "")
                 caminho = item.get("caminho", "")
@@ -740,6 +743,7 @@ def iniciar_automacao_completa(usuario_sei, senha_sei, usuario_app="Robô", dias
                         senha_sei=senha_sei,
                         id_sei=id_sei,
                         id_dil=id_dil,
+                        num_saj=num_saj,
                         callback_log=callback_log
                     )
                     atualizar_banco_pos_cobranca(

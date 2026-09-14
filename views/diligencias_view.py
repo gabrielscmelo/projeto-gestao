@@ -300,6 +300,7 @@ class AbaDiligencias:
         # ao mesmo tempo por serem parecidos entre si.
         self.map_campo_pesq_dil = {
             "Todos os Campos": None,
+            "ID": "id",
             "SAJ": "saj",
             "SEI": "sei",
             "DILIGÊNCIA": "diligencia",

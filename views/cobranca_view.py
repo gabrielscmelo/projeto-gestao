@@ -20,7 +20,124 @@ class AbaCobranca:
         self.id_diligencia_cob_sel = None
         self.janela_log = None
         self.txt_log_robo = None
+
+        # Guarda a ordenação (coluna + direção) escolhida pelo usuário, para
+        # que ela seja reaplicada automaticamente após qualquer recarga da
+        # lista (registro de cobrança, execução do robô, nova busca).
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        self._col_headers = {}
+
+        # Contador de requisições ao banco: só o resultado da requisição MAIS
+        # RECENTE preenche a tabela, evitando que uma busca antiga e lenta
+        # sobrescreva por engano o resultado de uma busca mais nova.
+        self._listar_seq = 0
+
+        self._toast_label = None
+        self._toast_after_id = None
+
+        # Sinalizador cooperativo de cancelamento do robô — ver observação
+        # em cob_cancelar_robo() sobre os limites dessa funcionalidade.
+        self._robo_cancelar_solicitado = False
+
         self.montar_aba()
+
+    # ------------------------------------------------------------------
+    # ORDENAÇÃO DE COLUNAS (persistente entre recargas da lista)
+    # ------------------------------------------------------------------
+    def _ordenar_coluna(self, col, reverse):
+        itens = [(self.tab_cob_tree.set(k, col), k) for k in self.tab_cob_tree.get_children('')]
+
+        def chave_ordenacao(item):
+            val = str(item[0]).strip()
+            if re.match(r'^\d{2}/\d{2}/\d{4}', val):
+                try:
+                    return datetime.strptime(val[:10], '%d/%m/%Y')
+                except ValueError:
+                    pass
+            # Coluna "ATRASO" tem o formato "12d atrás" — extrai o número
+            # para ordenar numericamente em vez de alfabeticamente.
+            m = re.match(r'^(\d+)d atrás$', val)
+            if m:
+                return int(m.group(1))
+            if val.isdigit():
+                return int(val)
+            return val.lower()
+
+        try:
+            itens.sort(key=chave_ordenacao, reverse=reverse)
+        except Exception:
+            itens.sort(key=lambda x: str(x[0]).lower(), reverse=reverse)
+
+        for index, (val, k) in enumerate(itens):
+            self.tab_cob_tree.move(k, '', index)
+
+        self.tab_cob_tree.heading(
+            col,
+            command=lambda _col=col: self._ordenar_coluna(_col, not reverse)
+        )
+
+        self._sort_coluna_atual = col
+        self._sort_reverse_atual = reverse
+        self._atualizar_estado_btn_ordenacao()
+        self._atualizar_headers_ordenacao()
+
+    def _atualizar_headers_ordenacao(self):
+        for col, texto_base in self._col_headers.items():
+            if col == self._sort_coluna_atual:
+                seta = " ▼" if self._sort_reverse_atual else " ▲"
+                self.tab_cob_tree.heading(col, text=texto_base + seta)
+            else:
+                self.tab_cob_tree.heading(col, text=texto_base)
+
+    def _reaplicar_ordenacao(self):
+        if self._sort_coluna_atual is not None:
+            self._ordenar_coluna(self._sort_coluna_atual, self._sort_reverse_atual)
+
+    def _atualizar_estado_btn_ordenacao(self):
+        if not hasattr(self, 'btn_ordenacao_ativa'):
+            return
+        if self._sort_coluna_atual is not None:
+            self.btn_ordenacao_ativa.configure(fg_color="#1f538d", hover_color="#14375e")
+        else:
+            self.btn_ordenacao_ativa.configure(fg_color="#454545", hover_color="#2b2b2b")
+
+    def cob_limpar_ordenacao(self):
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        self._atualizar_estado_btn_ordenacao()
+        self._atualizar_headers_ordenacao()
+        self.cob_listar()
+
+    # ------------------------------------------------------------------
+    # FEEDBACK LEVE (TOAST) E INDICADOR DE CARREGAMENTO
+    # ------------------------------------------------------------------
+    def _mostrar_toast(self, texto, cor="#2e7d32"):
+        if self._toast_label is not None and self._toast_label.winfo_exists():
+            if self._toast_after_id:
+                self.master.after_cancel(self._toast_after_id)
+            self._toast_label.destroy()
+
+        self._toast_label = ctk.CTkLabel(
+            self.f_lista_cob, text=texto, fg_color=cor, text_color="white",
+            corner_radius=6, font=("Arial", 12, "bold")
+        )
+        self._toast_label.place(relx=0.5, rely=0.03, anchor="n")
+        self._toast_after_id = self.master.after(2800, self._esconder_toast)
+
+    def _esconder_toast(self):
+        if self._toast_label is not None and self._toast_label.winfo_exists():
+            self._toast_label.destroy()
+        self._toast_label = None
+        self._toast_after_id = None
+
+    def _mostrar_carregando(self, mostrar):
+        if not hasattr(self, 'lbl_carregando_cob'):
+            return
+        if mostrar:
+            self.lbl_carregando_cob.pack(side="left", padx=(10, 0))
+        else:
+            self.lbl_carregando_cob.pack_forget()
 
     def montar_aba(self):
         # ----------------------------------------------------------------------
@@ -51,8 +168,21 @@ class AbaCobranca:
         )
         self.btn_executar_robo.pack(pady=(4, 8))
 
+        # Botão para sinalizar cancelamento ao robô. Fica oculto enquanto não
+        # há execução em andamento. Ver observação em cob_cancelar_robo()
+        # sobre os limites reais dessa funcionalidade.
+        self.btn_parar_robo = ctk.CTkButton(
+            self.f_form_cob,
+            text="🛑 Parar Robô",
+            command=self.cob_cancelar_robo,
+            fg_color="#a83232",
+            hover_color="#7a2323",
+            width=260
+        )
+
         # Linha Divisória
-        ctk.CTkFrame(self.f_form_cob, height=2, fg_color="#333333").pack(fill="x", padx=10, pady=6)
+        self.f_divisor_robo = ctk.CTkFrame(self.f_form_cob, height=2, fg_color="#333333")
+        self.f_divisor_robo.pack(fill="x", padx=10, pady=6)
 
         # --- SEÇÃO DE REGISTRO MANUAL ---
         ctk.CTkLabel(self.f_form_cob, text="📝 Registro Manual", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(2, 2))
@@ -117,12 +247,27 @@ class AbaCobranca:
         self.debouncer_cob = Debouncer(self.e_pesq_cob)
         self.debouncer_cob.bind(self.cob_listar)
 
+        # Botão com símbolo de ordenação: fica destacado (azul) quando existe
+        # uma ordenação de coluna ativa e, ao ser clicado, limpa essa
+        # ordenação, voltando a lista para a ordem padrão por ID.
+        self.btn_ordenacao_ativa = ctk.CTkButton(
+            f_pesq, text="🔽 Ordenação", width=100,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=self.cob_limpar_ordenacao
+        )
+        self.btn_ordenacao_ativa.pack(side="right", padx=(10, 0))
+
+        # Indicador de carregamento — visível apenas enquanto a consulta ao
+        # banco está em andamento.
+        self.lbl_carregando_cob = ctk.CTkLabel(f_pesq, text="⏳ Carregando...", text_color="gray")
+
         cols = ("id", "saj", "sei", "diligencia", "secretaria", "caminho", "id_sei", "envio", "prazo", "dias_atraso")
         self.tab_cob_tree = ttk.Treeview(self.f_lista_cob, columns=cols, show="headings", selectmode="browse")
 
         headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO VENCIDO", "ATRASO")
+        self._col_headers = dict(zip(cols, headers))
         for c, h in zip(cols, headers):
-            self.tab_cob_tree.heading(c, text=h)
+            self.tab_cob_tree.heading(c, text=h, command=lambda _col=c: self._ordenar_coluna(_col, False))
 
         self.tab_cob_tree.column("id", width=40, anchor="center")
         self.tab_cob_tree.column("saj", width=110)
@@ -183,19 +328,40 @@ class AbaCobranca:
         texto_prorrogacao = self.cmb_prazo_cob.get()
         dias_prorrogacao = int(re.sub(r"\D", "", texto_prorrogacao)) if texto_prorrogacao else 5
 
+        self._robo_cancelar_solicitado = False
         self._abrir_janela_log_robo()
         self.btn_executar_robo.configure(state="disabled", text="⏳ Executando Automação...")
+        self.btn_parar_robo.configure(state="normal", text="🛑 Parar Robô")
+        # 'before' garante que o botão sempre apareça logo abaixo do botão
+        # "Executar Robô", e não no final do painel rolável (que é onde o
+        # Tkinter o colocaria por padrão, já que ele não estava empacotado
+        # desde a criação).
+        self.btn_parar_robo.pack(pady=(0, 8), before=self.f_divisor_robo)
 
         def _rodar_thread():
             try:
                 usuario_app = getattr(self.app, 'usuario_atual', 'Robô')
-                iniciar_automacao_completa(
-                    usuario_sei=usuario_sei,
-                    senha_sei=senha_sei,
-                    usuario_app=usuario_app,
-                    dias_prorrogacao=dias_prorrogacao,
-                    callback_log=self.adicionar_log_console
-                )
+                # Tenta repassar um "sinalizador de parada" cooperativo para
+                # o robô. Se services/robo_cobranca.py não suportar esse
+                # parâmetro (versão atual não suporta), a chamada cai no
+                # except e roda normalmente sem suporte a cancelamento.
+                try:
+                    iniciar_automacao_completa(
+                        usuario_sei=usuario_sei,
+                        senha_sei=senha_sei,
+                        usuario_app=usuario_app,
+                        dias_prorrogacao=dias_prorrogacao,
+                        callback_log=self.adicionar_log_console,
+                        deve_parar=lambda: self._robo_cancelar_solicitado
+                    )
+                except TypeError:
+                    iniciar_automacao_completa(
+                        usuario_sei=usuario_sei,
+                        senha_sei=senha_sei,
+                        usuario_app=usuario_app,
+                        dias_prorrogacao=dias_prorrogacao,
+                        callback_log=self.adicionar_log_console
+                    )
             except Exception as err:
                 logging.error(f"Erro na execução do robô: {err}")
                 self.adicionar_log_console(f"❌ [Erro Crítico] Falha geral na execução do robô: {err}")
@@ -203,6 +369,24 @@ class AbaCobranca:
                 self.master.after(0, self._finalizar_execucao_robo)
 
         threading.Thread(target=_rodar_thread, daemon=True).start()
+
+    def cob_cancelar_robo(self):
+        """
+        Sinaliza pedido de cancelamento para a automação em andamento.
+
+        IMPORTANTE: isso é cooperativo — só interrompe de fato se
+        services/robo_cobranca.py checar periodicamente esse sinalizador
+        (via o parâmetro opcional 'deve_parar') entre um passo e outro da
+        automação. Sem essa checagem no lado do robô, este botão apenas evita
+        que uma NOVA execução comece e avisa no log que o cancelamento foi
+        pedido — a rotina em andamento só para no próximo ponto em que ela
+        mesma decidir checar o sinalizador.
+        """
+        if not messagebox.askyesno("Cancelar Automação", "Deseja sinalizar o cancelamento da automação em andamento?"):
+            return
+        self._robo_cancelar_solicitado = True
+        self.btn_parar_robo.configure(state="disabled", text="🛑 Cancelamento solicitado...")
+        self.adicionar_log_console("🛑 Cancelamento solicitado pelo usuário — a automação para no próximo ponto de checagem.")
 
     def _abrir_janela_log_robo(self):
         self.janela_log = ctk.CTkToplevel(self.master)
@@ -229,6 +413,8 @@ class AbaCobranca:
 
     def _finalizar_execucao_robo(self):
         self.btn_executar_robo.configure(state="normal", text="🚀 Executar Robô em Lote")
+        self.btn_parar_robo.pack_forget()
+        self._robo_cancelar_solicitado = False
         self.cob_listar()
         if hasattr(self.app, 'aba_diligencias'):
             self.app.aba_diligencias.dil_listar()
@@ -246,9 +432,11 @@ class AbaCobranca:
         self.cmb_prazo_cob.set("+5 dias")
 
     def cob_listar(self):
-        for item in self.tab_cob_tree.get_children(): 
-            self.tab_cob_tree.delete(item)
         busca = self.e_pesq_cob.get().strip()
+
+        self._listar_seq += 1
+        seq_atual = self._listar_seq
+        self._mostrar_carregando(True)
 
         def tarefa_banco():
             con = obter_conexao()
@@ -266,16 +454,28 @@ class AbaCobranca:
                     cur.execute(query, tuple(params))
                     atrasadas = cur.fetchall()
 
-                    self.master.after(0, lambda: self._preencher_tabela(atrasadas))
+                    self.master.after(0, lambda: self._preencher_tabela(atrasadas, seq_atual))
                 except mysql.connector.Error as err:
                     logging.error(f"Erro ao listar cobranças: {err}")
+                    self.master.after(0, lambda: self._mostrar_carregando(False))
+                    self.master.after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista de cobranças:\n{err}"))
                 finally: 
                     cur.close()
                     con.close()
+            else:
+                self.master.after(0, lambda: self._mostrar_carregando(False))
 
         threading.Thread(target=tarefa_banco, daemon=True).start()
 
-    def _preencher_tabela(self, atrasadas):
+    def _preencher_tabela(self, atrasadas, seq=None):
+        # Descarta resultados de uma requisição antiga que chegou depois de
+        # uma mais nova (proteção contra race condition de rede/consulta).
+        if seq is not None and seq != self._listar_seq:
+            return
+
+        for item in self.tab_cob_tree.get_children():
+            self.tab_cob_tree.delete(item)
+
         for row in atrasadas:
             pz_str = row['prazo'].strftime('%Y-%m-%d') if hasattr(row['prazo'], 'strftime') else str(row['prazo'])
             env_str = row['data_envio'].strftime('%d/%m/%Y') if hasattr(row['data_envio'], 'strftime') else (row['data_envio'] or "")
@@ -299,6 +499,13 @@ class AbaCobranca:
                 f"{abs(dias)}d atrás"
             ), tags=("atrasado",))
         self.lbl_total_cob.configure(text=f"Diligências Espelhadas (Em Atraso): {len(atrasadas)}")
+
+        # Reaplica a ordenação de coluna escolhida pelo usuário, já que o
+        # SELECT devolve as linhas por ID e, sem isso, qualquer recarga
+        # (registro de cobrança, execução do robô, nova busca) perderia a
+        # ordenação e voltaria para a ordem padrão.
+        self._reaplicar_ordenacao()
+        self._mostrar_carregando(False)
 
     def cob_carregar_campos(self, event=None):
         sel = self.tab_cob_tree.selection()
@@ -364,8 +571,8 @@ class AbaCobranca:
                 cur.execute(sql_update, (dias_adicionais, self.id_diligencia_cob_sel))
                 con.commit()
 
-                messagebox.showinfo("Sucesso", f"Cobrança realizada com sucesso!\n\n• Prazo prorrogado por +{dias_adicionais} dias.\n• A diligência retornou à Lotação e a tarja vermelha foi removida.")
-                
+                self._mostrar_toast(f"✔ Cobrança registrada! Prazo +{dias_adicionais} dias.", "#2e7d32")
+
                 self.cob_limpar_campos()
                 if hasattr(self.app, 'aba_diligencias'): 
                     self.app.aba_diligencias.dil_listar()
@@ -384,6 +591,15 @@ class AbaCobranca:
         janela.transient(self.master)
 
         ctk.CTkLabel(janela, text="Histórico de Cobranças Efetuadas", font=("Arial", 16, "bold")).pack(pady=10)
+
+        # Campo de busca local — como a lista pode crescer bastante com o
+        # tempo, rolar sem filtro fica inviável. Filtra por SAJ, SEI,
+        # Órgão/Secretaria ou Observação sobre os dados já carregados.
+        f_busca_hist = ctk.CTkFrame(janela, fg_color="transparent")
+        f_busca_hist.pack(fill="x", padx=10, pady=(0, 5))
+        ctk.CTkLabel(f_busca_hist, text="Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
+        e_busca_hist = ctk.CTkEntry(f_busca_hist, placeholder_text="SAJ, SEI, Órgão/Secretaria ou Observação...", width=320)
+        e_busca_hist.pack(side="left", fill="x", expand=True, padx=5)
 
         cols = ("id", "saj", "sei", "orgao", "caminho", "id_sei", "data_cob", "meio", "prorrogacao", "obs", "por")
         tb_hist = ttk.Treeview(janela, columns=cols, show="headings")
@@ -406,6 +622,23 @@ class AbaCobranca:
 
         tb_hist.pack(fill="both", expand=True, padx=10, pady=10)
 
+        # Guarda todas as linhas carregadas do banco (lista de tuplas de
+        # valores) para permitir filtrar localmente sem nova consulta a
+        # cada tecla digitada.
+        todas_as_linhas = []
+
+        def _repopular(filtro=""):
+            tb_hist.delete(*tb_hist.get_children())
+            filtro = filtro.strip().lower()
+            for valores in todas_as_linhas:
+                if not filtro or any(filtro in str(v).lower() for v in valores):
+                    tb_hist.insert("", "end", values=valores)
+
+        def _on_busca_hist(event=None):
+            _repopular(e_busca_hist.get())
+
+        e_busca_hist.bind("<KeyRelease>", _on_busca_hist)
+
         con = obter_conexao()
         if con:
             try:
@@ -413,13 +646,16 @@ class AbaCobranca:
                 cur.execute("SELECT * FROM tb_cobranca_respostas ORDER BY data_criacao DESC")
                 for row in cur.fetchall():
                     dt_str = row['data_cobranca'].strftime('%d/%m/%Y') if hasattr(row['data_cobranca'], 'strftime') else str(row['data_cobranca'])
-                    tb_hist.insert("", "end", values=(
+                    valores = (
                         row['id'], row['saj'] or "-", row['sei'] or "-", row['orgao_secretaria'] or "-",
                         row.get('caminho') or "-", row.get('Id SEI') or "-", dt_str, row['meio_cobranca'], f"+{row['dias_prorrogados']} dias",
                         row['observacao'] or "-", row['usuario_criacao'] or "N/A"
-                    ))
+                    )
+                    todas_as_linhas.append(valores)
+                _repopular()
             except mysql.connector.Error as err:
                 logging.error(f"Erro ao buscar histórico: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao carregar o histórico:\n{err}", parent=janela)
             finally: 
                 cur.close()
                 con.close()

@@ -1,12 +1,26 @@
 import sys
+import os
+import json
+import logging
+import threading
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 import customtkinter as ctk
 
+from database.connection import obter_conexao
 from views.usuarios_view import JanelaUsuarios
 from views.diligencias_view import AbaDiligencias
 from views.usucapiao_view import AbaUsucapiao
 from views.cobranca_view import AbaCobranca
+
+# Arquivo simples (JSON) só para lembrar a preferência de tema entre uma
+# abertura e outra do programa — antes, a escolha de "Modo Claro" se perdia
+# a cada reinício e o app sempre voltava para o tema escuro padrão.
+ARQUIVO_PREFERENCIAS_UI = "ui_prefs.json"
+
+# Intervalo (ms) entre checagens automáticas de conexão com o banco, para o
+# indicador de status na barra superior.
+INTERVALO_CHECAGEM_BD_MS = 30000
 
 class Aplicativo(ctk.CTk):
     def __init__(self, usuario_atual, perfil_atual, nome_atual=None):
@@ -15,6 +29,12 @@ class Aplicativo(ctk.CTk):
         self.perfil_atual = perfil_atual
         self.nome_atual = nome_atual if nome_atual else usuario_atual
         self.deseja_fazer_logout = False
+
+        # Carrega e aplica a preferência de tema salva ANTES de montar
+        # qualquer widget, para a tela já abrir no tema certo em vez de
+        # sempre iniciar escura e só depois trocar.
+        self.tema_atual = self._carregar_tema_salvo()
+        ctk.set_appearance_mode(self.tema_atual)
 
         self.title("Sistema de Gestão - Diligências, Usucapião e Cobrança de Respostas")
         self.after(0, lambda: self.wm_state('zoomed'))
@@ -29,15 +49,26 @@ class Aplicativo(ctk.CTk):
         lbl_user = f"Usuário Logado: {self.nome_atual} ({self.perfil_atual.upper()})"
         ctk.CTkLabel(f_top, text=lbl_user, font=("Arial", 12, "bold")).pack(side="left", padx=15)
 
+        # Indicador de saúde da conexão com o banco de dados — como o
+        # sistema depende 100% do MySQL, isso ajuda o usuário a entender
+        # rapidamente se uma falha é "o banco caiu" e não um bug pontual.
+        self.lbl_status_bd = ctk.CTkLabel(f_top, text="🟡 Verificando conexão...", font=("Arial", 11), text_color="gray")
+        self.lbl_status_bd.pack(side="left", padx=10)
+
         if self.perfil_atual == 'admin':
             ctk.CTkButton(f_top, text="⚙ Gerenciar Usuários", command=self.abrir_gerencial_usuarios, fg_color="#3a7ebf", height=28).pack(side="left", padx=10)
 
         # Botão Sair (Logout voluntário para trocar de usuário)
         ctk.CTkButton(f_top, text="🚪 Sair", command=self.fazer_logout, fg_color="#a83232", hover_color="#7a2323", height=28, width=70).pack(side="right", padx=10)
 
-        # Switch de Tema
+        # Switch de Tema — o estado inicial reflete a preferência salva
+        # (self.tema_atual), carregada e aplicada no início do __init__.
         self.switch_tema = ctk.CTkSwitch(f_top, text="Modo Claro", command=self.alternar_tema)
         self.switch_tema.pack(side="right", padx=10)
+        if self.tema_atual == "light":
+            self.switch_tema.select()
+        else:
+            self.switch_tema.deselect()
 
         # Botão "Sobre o Sistema"
         ctk.CTkButton(f_top, text="ℹ Sobre", command=self.abrir_sobre, fg_color="#555555", hover_color="#333333", height=28, width=80).pack(side="right", padx=10)
@@ -72,7 +103,11 @@ class Aplicativo(ctk.CTk):
         self.aba_usucapiao = AbaUsucapiao(self.tab_usucapiao, self)
         self.aba_cobranca = AbaCobranca(self.tab_cobranca, self)
 
-        self.configurar_estilo_treeview("dark")
+        self.configurar_estilo_treeview(self.tema_atual)
+
+        # Inicia o monitoramento periódico da conexão com o banco (atualiza
+        # o indicador 🟢/🔴 na barra superior a cada 30s).
+        self._checar_conexao_bd()
 
         try:
             self.iconbitmap("assets/icon.ico")
@@ -105,7 +140,7 @@ class Aplicativo(ctk.CTk):
         texto_licenca = (
             "Este software é protegido por leis de direitos autorais.\n"
             "Uso exclusivo e autorizado para a instituição.\n\n"
-            "Desenvolvido por: Gabriel Melo\n"
+            "Desenvolvido por: Gabriel Costa\n"
             "© 2026 Todos os direitos reservados."
         )
         
@@ -114,6 +149,58 @@ class Aplicativo(ctk.CTk):
 
     def abrir_gerencial_usuarios(self):
         JanelaUsuarios(self)
+
+    # ------------------------------------------------------------------
+    # PERSISTÊNCIA DE TEMA
+    # ------------------------------------------------------------------
+    def _carregar_tema_salvo(self):
+        """Lê a preferência de tema salva em disco. Padrão: 'dark'."""
+        try:
+            if os.path.exists(ARQUIVO_PREFERENCIAS_UI):
+                with open(ARQUIVO_PREFERENCIAS_UI, "r", encoding="utf-8") as f:
+                    dados = json.load(f)
+                    tema = dados.get("tema")
+                    if tema in ("dark", "light"):
+                        return tema
+        except (OSError, json.JSONDecodeError) as err:
+            logging.warning(f"Não foi possível ler preferências de UI ({ARQUIVO_PREFERENCIAS_UI}): {err}")
+        return "dark"
+
+    def _salvar_tema(self, tema):
+        """Grava a preferência de tema em disco, para persistir entre reinícios."""
+        try:
+            with open(ARQUIVO_PREFERENCIAS_UI, "w", encoding="utf-8") as f:
+                json.dump({"tema": tema}, f)
+        except OSError as err:
+            logging.warning(f"Não foi possível salvar preferências de UI ({ARQUIVO_PREFERENCIAS_UI}): {err}")
+
+    # ------------------------------------------------------------------
+    # MONITOR DE CONEXÃO COM O BANCO
+    # ------------------------------------------------------------------
+    def _checar_conexao_bd(self):
+        """Dispara, em thread separada, uma checagem rápida da conexão com o banco."""
+        threading.Thread(target=self._tarefa_checar_conexao_bd, daemon=True).start()
+
+    def _tarefa_checar_conexao_bd(self):
+        conectado = False
+        try:
+            con = obter_conexao()
+            if con:
+                con.close()
+                conectado = True
+        except Exception as err:
+            logging.error(f"Erro ao checar conexão com o banco: {err}")
+        self.after(0, lambda: self._atualizar_status_bd(conectado))
+
+    def _atualizar_status_bd(self, conectado):
+        if not self.lbl_status_bd.winfo_exists():
+            return
+        if conectado:
+            self.lbl_status_bd.configure(text="🟢 Conectado", text_color="#4caf50")
+        else:
+            self.lbl_status_bd.configure(text="🔴 Sem conexão com o banco", text_color="#e57373")
+        # Reagenda a próxima checagem
+        self.after(INTERVALO_CHECAGEM_BD_MS, self._checar_conexao_bd)
 
     def configurar_estilo_treeview(self, modo):
         style = ttk.Style()
@@ -131,11 +218,14 @@ class Aplicativo(ctk.CTk):
 
     def alternar_tema(self):
         if self.switch_tema.get() == 1:
+            self.tema_atual = "light"
             ctk.set_appearance_mode("light")
             self.configurar_estilo_treeview("light")
         else:
+            self.tema_atual = "dark"
             ctk.set_appearance_mode("dark")
             self.configurar_estilo_treeview("dark")
+        self._salvar_tema(self.tema_atual)
 
     def ajustar_colunas_treeview(self, tree):
         fonte = tkfont.Font(font=("Arial", 10))

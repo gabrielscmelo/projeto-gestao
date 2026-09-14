@@ -1,7 +1,10 @@
+import re
+import logging
 import threading
 from datetime import datetime
 from tkinter import ttk, messagebox
 import customtkinter as ctk
+import mysql.connector
 from database.connection import obter_conexao
 from utils.debouncer import Debouncer
 from utils.pdf_exporter import exportar_treeview_pdf
@@ -12,7 +15,160 @@ class AbaUsucapiao:
         self.master = master
         self.app = app_instance
         self.id_usucapiao_sel = None
+
+        # Guarda a ordenação (coluna + direção) escolhida pelo usuário, para que
+        # ela seja reaplicada automaticamente após qualquer recarga da lista
+        # (cadastro, atualização, exclusão, conclusão), em vez de a lista voltar
+        # sempre para a ordem padrão por ID.
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        # Texto "puro" (sem seta ▲/▼) de cada cabeçalho, para remontar com/sem
+        # o indicador de ordenação.
+        self._col_headers = {}
+
+        # ID a re-selecionar na Treeview após a lista recarregar (usado após
+        # cadastrar/atualizar, para o usuário não perder a linha de vista).
+        self._id_para_selecionar = None
+
+        # Contador de requisições ao banco: só o resultado da requisição MAIS
+        # RECENTE preenche a tabela, evitando que uma busca antiga e lenta
+        # sobrescreva por engano o resultado de uma busca mais nova.
+        self._listar_seq = 0
+
+        self._toast_label = None
+        self._toast_after_id = None
+
         self.montar_aba()
+
+    # ------------------------------------------------------------------
+    # ORDENAÇÃO DE COLUNAS (persistente entre recargas da lista)
+    # ------------------------------------------------------------------
+    def _ordenar_coluna(self, col, reverse):
+        """
+        Ordena o Treeview pela coluna clicada, tratando datas, números e
+        texto, alternando entre ordem crescente e decrescente a cada clique.
+        """
+        itens = [(self.tab_usu_tree.set(k, col), k) for k in self.tab_usu_tree.get_children('')]
+
+        def chave_ordenacao(item):
+            val = str(item[0]).strip()
+            if re.match(r'^\d{2}/\d{2}/\d{4}', val):
+                try:
+                    return datetime.strptime(val[:10], '%d/%m/%Y')
+                except ValueError:
+                    pass
+            if val.isdigit():
+                return int(val)
+            return val.lower()
+
+        try:
+            itens.sort(key=chave_ordenacao, reverse=reverse)
+        except Exception:
+            itens.sort(key=lambda x: str(x[0]).lower(), reverse=reverse)
+
+        for index, (val, k) in enumerate(itens):
+            self.tab_usu_tree.move(k, '', index)
+
+        # Alterna o comando para a próxima ordenação ser inversa
+        self.tab_usu_tree.heading(
+            col,
+            command=lambda _col=col: self._ordenar_coluna(_col, not reverse)
+        )
+
+        self._sort_coluna_atual = col
+        self._sort_reverse_atual = reverse
+        self._atualizar_estado_btn_ordenacao()
+        self._atualizar_headers_ordenacao()
+
+    def _atualizar_headers_ordenacao(self):
+        """
+        Reescreve o texto de todos os cabeçalhos, acrescentando uma seta
+        (▲ crescente / ▼ decrescente) apenas na coluna atualmente ordenada.
+        """
+        for col, texto_base in self._col_headers.items():
+            if col == self._sort_coluna_atual:
+                seta = " ▼" if self._sort_reverse_atual else " ▲"
+                self.tab_usu_tree.heading(col, text=texto_base + seta)
+            else:
+                self.tab_usu_tree.heading(col, text=texto_base)
+
+    def _reaplicar_ordenacao(self):
+        """
+        Reaplica a última ordenação de coluna escolhida pelo usuário. Deve
+        ser chamada sempre que a Treeview for repopulada a partir do banco,
+        pois o SELECT não garante a ordem que o usuário escolheu.
+        """
+        if self._sort_coluna_atual is not None:
+            self._ordenar_coluna(self._sort_coluna_atual, self._sort_reverse_atual)
+
+    def _atualizar_estado_btn_ordenacao(self):
+        """
+        Reflete no botão de ordenação se há alguma ordenação de coluna ativa
+        (destacado) ou não (neutro).
+        """
+        if not hasattr(self, 'btn_ordenacao_ativa'):
+            return
+        if self._sort_coluna_atual is not None:
+            self.btn_ordenacao_ativa.configure(fg_color="#1f538d", hover_color="#14375e")
+        else:
+            self.btn_ordenacao_ativa.configure(fg_color="#454545", hover_color="#2b2b2b")
+
+    def usu_limpar_ordenacao(self):
+        """Limpa a ordenação ativa, voltando a lista para a ordem por ID."""
+        self._sort_coluna_atual = None
+        self._sort_reverse_atual = False
+        self._atualizar_estado_btn_ordenacao()
+        self._atualizar_headers_ordenacao()
+        self.usu_listar()
+
+    def _selecionar_por_id(self, item_id):
+        """
+        Procura na Treeview a linha cujo ID corresponde a item_id, seleciona
+        e rola a visão até ela. Usado para manter o usuário "no lugar" após
+        cadastrar ou atualizar um processo.
+        """
+        if item_id is None:
+            return
+        item_id = str(item_id)
+        for k in self.tab_usu_tree.get_children(''):
+            if str(self.tab_usu_tree.set(k, "id")) == item_id:
+                self.tab_usu_tree.selection_set(k)
+                self.tab_usu_tree.see(k)
+                break
+
+    # ------------------------------------------------------------------
+    # FEEDBACK LEVE (TOAST) E INDICADOR DE CARREGAMENTO
+    # ------------------------------------------------------------------
+    def _mostrar_toast(self, texto, cor="#2e7d32"):
+        """
+        Mostra uma notificação leve e temporária no canto da lista, em vez
+        de um messagebox modal que trava a tela a cada cadastro/atualização.
+        """
+        if self._toast_label is not None and self._toast_label.winfo_exists():
+            if self._toast_after_id:
+                self.master.after_cancel(self._toast_after_id)
+            self._toast_label.destroy()
+
+        self._toast_label = ctk.CTkLabel(
+            self.f_lista_usu, text=texto, fg_color=cor, text_color="white",
+            corner_radius=6, font=("Arial", 12, "bold")
+        )
+        self._toast_label.place(relx=0.5, rely=0.03, anchor="n")
+        self._toast_after_id = self.master.after(2200, self._esconder_toast)
+
+    def _esconder_toast(self):
+        if self._toast_label is not None and self._toast_label.winfo_exists():
+            self._toast_label.destroy()
+        self._toast_label = None
+        self._toast_after_id = None
+
+    def _mostrar_carregando(self, mostrar):
+        if not hasattr(self, 'lbl_carregando_usu'):
+            return
+        if mostrar:
+            self.lbl_carregando_usu.pack(side="left", padx=(10, 0))
+        else:
+            self.lbl_carregando_usu.pack_forget()
 
     def montar_aba(self):
         self.f_form_usu = ctk.CTkFrame(self.master, width=320)
@@ -47,19 +203,35 @@ class AbaUsucapiao:
         self.cmb_tipo_usu.pack(pady=4)
 
         ctk.CTkLabel(self.f_form_usu, text="Secretarias Respondidas:", font=("Arial", 11, "bold")).pack(anchor="w", padx=30, pady=(6, 0))
-        
+
+        # As variáveis (0/1) continuam sendo 3 porque a tabela no banco
+        # (tb_usucapiao) só tem 3 colunas fixas: sec1_ok, sec2_ok, sec3_ok.
+        # O que muda é a EXIBIÇÃO: em vez de sempre mostrar "1ª/2ª/3ª
+        # Secretaria" mesmo quando o usuário digitou só uma, os checkboxes
+        # agora aparecem dinamicamente com o NOME real de cada secretaria
+        # digitada no campo acima, e ficam ocultos quando não há
+        # correspondente — evitando confusão sobre "o que é a 3ª secretaria".
         self.chk_sec1_var = ctk.IntVar(value=0)
         self.chk_sec2_var = ctk.IntVar(value=0)
         self.chk_sec3_var = ctk.IntVar(value=0)
+        self._chk_secs_vars = [self.chk_sec1_var, self.chk_sec2_var, self.chk_sec3_var]
 
-        self.chk_sec1 = ctk.CTkCheckBox(self.f_form_usu, text="1ª Secretaria", variable=self.chk_sec1_var)
-        self.chk_sec1.pack(anchor="w", padx=35, pady=2)
-        
-        self.chk_sec2 = ctk.CTkCheckBox(self.f_form_usu, text="2ª Secretaria", variable=self.chk_sec2_var)
-        self.chk_sec2.pack(anchor="w", padx=35, pady=2)
+        self.f_checks_usu = ctk.CTkFrame(self.f_form_usu, fg_color="transparent")
+        self.f_checks_usu.pack(fill="x", padx=15, pady=2)
 
-        self.chk_sec3 = ctk.CTkCheckBox(self.f_form_usu, text="3ª Secretaria", variable=self.chk_sec3_var)
-        self.chk_sec3.pack(anchor="w", padx=35, pady=2)
+        self.chk_sec1 = ctk.CTkCheckBox(self.f_checks_usu, text="1ª Secretaria", variable=self.chk_sec1_var)
+        self.chk_sec2 = ctk.CTkCheckBox(self.f_checks_usu, text="2ª Secretaria", variable=self.chk_sec2_var)
+        self.chk_sec3 = ctk.CTkCheckBox(self.f_checks_usu, text="3ª Secretaria", variable=self.chk_sec3_var)
+        self._chk_secs_widgets = [self.chk_sec1, self.chk_sec2, self.chk_sec3]
+
+        # Aviso exibido apenas quando o usuário digita mais de 3 secretarias
+        # (a tabela do banco só rastreia resposta para as 3 primeiras).
+        self.lbl_aviso_secretarias = ctk.CTkLabel(
+            self.f_checks_usu, text="⚠ Apenas as 3 primeiras secretarias têm resposta rastreada.",
+            font=("Arial", 10), text_color="#ffb74d", wraplength=250, justify="left"
+        )
+
+        self.atualizar_rotulos_secretarias()
 
         self.btn_salvar_usu = ctk.CTkButton(self.f_form_usu, text="Salvar Novo", command=self.usu_cadastrar, fg_color="green", hover_color="darkgreen", width=260)
         self.btn_salvar_usu.pack(pady=10)
@@ -86,12 +258,28 @@ class AbaUsucapiao:
         self.cmb_ano_usu.set("Todos")
         self.cmb_ano_usu.pack(side="left", padx=5)
 
+        # Botão com símbolo de ordenação: fica destacado (azul) quando existe
+        # uma ordenação de coluna ativa e, ao ser clicado, limpa essa
+        # ordenação, voltando a lista para a ordem padrão por ID.
+        self.btn_ordenacao_ativa = ctk.CTkButton(
+            f_pesq, text="🔽 Ordenação", width=100,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=self.usu_limpar_ordenacao
+        )
+        self.btn_ordenacao_ativa.pack(side="right", padx=(10, 0))
+
+        # Indicador de carregamento — visível apenas enquanto a consulta ao
+        # banco está em andamento, para o usuário não achar que o clique
+        # "não funcionou" numa base grande ou conexão lenta.
+        self.lbl_carregando_usu = ctk.CTkLabel(f_pesq, text="⏳ Carregando...", text_color="gray")
+
         cols = ("id", "saj", "sei", "id_sei", "interessado", "secretarias", "envio", "tipo", "status", "enviado_por")
         self.tab_usu_tree = ttk.Treeview(self.f_lista_usu, columns=cols, show="headings", selectmode="browse")
-        
+
         headers = ("ID", "SAJ", "SEI", "ID SEI", "INTERESSADO", "SECRETARIAS", "ENVIO", "TIPO", "STATUS RESPOSTAS", "ENVIADO POR")
+        self._col_headers = dict(zip(cols, headers))
         for c, h in zip(cols, headers):
-            self.tab_usu_tree.heading(c, text=h)
+            self.tab_usu_tree.heading(c, text=h, command=lambda _col=c: self._ordenar_coluna(_col, False))
 
         self.tab_usu_tree.column("id", width=30, anchor="center")
         self.tab_usu_tree.column("saj", width=110)
@@ -104,8 +292,18 @@ class AbaUsucapiao:
         self.tab_usu_tree.column("status", width=160)
         self.tab_usu_tree.column("enviado_por", width=90)
 
+        # Cores de status: verde quando todas as secretarias já responderam,
+        # laranja quando há resposta parcial, para permitir escanear a lista
+        # visualmente em vez de ler o texto do status linha a linha.
+        self.tab_usu_tree.tag_configure("concluido_usu", background="#1b4d2b", foreground="#ffffff")
+        self.tab_usu_tree.tag_configure("parcial_usu", background="#7a5a12", foreground="#ffffff")
+
         self.tab_usu_tree.pack(pady=10, padx=10, fill="both", expand=True)
         self.tab_usu_tree.bind("<Double-1>", self.usu_carregar_campos)
+        # Também carrega os campos com um único clique (seleção), igual ao
+        # comportamento da aba de Diligências — antes só o duplo-clique
+        # funcionava, o que confundia quem tentava editar com um clique.
+        self.tab_usu_tree.bind("<<TreeviewSelect>>", self.usu_carregar_campos)
 
         f_act = ctk.CTkFrame(self.f_lista_usu, fg_color="transparent")
         f_act.pack(fill="x", padx=10, pady=(0, 10))
@@ -122,11 +320,32 @@ class AbaUsucapiao:
             widget.delete(0, 'end'); widget.insert(0, funcao_mascara(val))
 
     def atualizar_rotulos_secretarias(self, event=None):
+        """
+        Reconstrói dinamicamente os checkboxes de "Secretaria Respondida" a
+        partir do que foi digitado no campo de secretarias — mostrando o
+        NOME real de cada uma, e ocultando os checkboxes sem correspondente
+        (ex.: se só 1 secretaria foi digitada, só aparece 1 checkbox, em vez
+        de mostrar 3 rótulos genéricos "1ª/2ª/3ª Secretaria").
+        """
         texto = self.e_sec_usu.get().strip()
         secs = [s.strip() for s in texto.split(',') if s.strip()]
-        self.chk_sec1.configure(text=f"Respondido: {secs[0]}" if len(secs) > 0 else "1ª Secretaria Respondida")
-        self.chk_sec2.configure(text=f"Respondido: {secs[1]}" if len(secs) > 1 else "2ª Secretaria Respondida")
-        self.chk_sec3.configure(text=f"Respondido: {secs[2]}" if len(secs) > 2 else "3ª Secretaria Respondida")
+
+        for i, chk in enumerate(self._chk_secs_widgets):
+            if i < len(secs):
+                chk.configure(text=f"Respondido: {secs[i]}")
+                if not chk.winfo_ismapped():
+                    chk.pack(anchor="w", pady=2)
+            else:
+                if chk.winfo_ismapped():
+                    chk.pack_forget()
+                self._chk_secs_vars[i].set(0)
+
+        if len(secs) > 3:
+            if not self.lbl_aviso_secretarias.winfo_ismapped():
+                self.lbl_aviso_secretarias.pack(anchor="w", pady=(4, 0))
+        else:
+            if self.lbl_aviso_secretarias.winfo_ismapped():
+                self.lbl_aviso_secretarias.pack_forget()
 
     def calcular_status_usucapiao(self, s1, s2, s3, lista_sec_str=""):
         secs = [s.strip() for s in lista_sec_str.split(',') if s.strip()]
@@ -182,15 +401,25 @@ class AbaUsucapiao:
                 """
                 cur.execute(sql, (saj, sei, id_sei, interessado, secretarias, envio_fmt, tipo, s1, s2, s3, status_txt, self.app.usuario_atual))
                 con.commit()
-                messagebox.showinfo("Sucesso", "Processo cadastrado!")
+                # Guarda o ID recém-criado para que, após a lista recarregar,
+                # o novo processo já apareça selecionado e visível.
+                self._id_para_selecionar = cur.lastrowid
+                self._mostrar_toast("✔ Processo cadastrado!", "#2e7d32")
                 self.usu_limpar_campos(); self.usu_listar()
-            finally: cur.close(); con.close()
+            except mysql.connector.Error as err:
+                logging.error(f"Erro ao cadastrar usucapião: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao salvar o processo:\n{err}")
+            finally:
+                cur.close(); con.close()
 
     # LISTAR USANDO THREADING
     def usu_listar(self):
-        for item in self.tab_usu_tree.get_children(): self.tab_usu_tree.delete(item)
         busca = self.e_pesq_usu.get().strip()
         ano = self.cmb_ano_usu.get()
+
+        self._listar_seq += 1
+        seq_atual = self._listar_seq
+        self._mostrar_carregando(True)
 
         def tarefa_banco():
             con = obter_conexao()
@@ -212,19 +441,57 @@ class AbaUsucapiao:
                     linhas = cur.fetchall()
 
                     # Atualiza a interface gráfica com segurança
-                    self.master.winfo_toplevel().after(0, lambda: self._preencher_tabela(linhas))
-                finally: cur.close(); con.close()
+                    self.master.winfo_toplevel().after(0, lambda: self._preencher_tabela(linhas, seq_atual))
+                except mysql.connector.Error as err:
+                    logging.error(f"Erro ao listar usucapião: {err}")
+                    self.master.winfo_toplevel().after(0, lambda: self._mostrar_carregando(False))
+                    self.master.winfo_toplevel().after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista:\n{err}"))
+                finally:
+                    cur.close(); con.close()
+            else:
+                self.master.winfo_toplevel().after(0, lambda: self._mostrar_carregando(False))
 
         threading.Thread(target=tarefa_banco, daemon=True).start()
 
-    def _preencher_tabela(self, linhas):
+    def _preencher_tabela(self, linhas, seq=None):
+        # Descarta resultados de uma requisição antiga que chegou depois de
+        # uma mais nova (proteção contra race condition de rede/consulta).
+        if seq is not None and seq != self._listar_seq:
+            return
+
+        for item in self.tab_usu_tree.get_children():
+            self.tab_usu_tree.delete(item)
+
         for row in linhas:
             env_str = row['data_envio'].strftime('%d/%m/%Y') if hasattr(row['data_envio'], 'strftime') else (row['data_envio'] or "")
             st_dinamico = self.calcular_status_usucapiao(row['sec1_ok'], row['sec2_ok'], row['sec3_ok'], row['secretarias'] or "")
+
+            # Destaque visual: verde quando concluído, laranja quando há
+            # resposta parcial, para escanear a lista sem ler cada status.
+            if st_dinamico.startswith("Concluído"):
+                tags = ("concluido_usu",)
+            elif st_dinamico.startswith("Resp:"):
+                tags = ("parcial_usu",)
+            else:
+                tags = ()
+
             self.tab_usu_tree.insert("", "end", values=(
                 row['id'], row['saj'], row['sei'], row.get('Id SEI') or "-", row['interessado'],
                 row['secretarias'], env_str, row['tipo_solicitacao'], st_dinamico, row['usuario_criacao'] or "N/A"
-            ))
+            ), tags=tags)
+
+        # Reaplica a ordenação de coluna escolhida pelo usuário, já que o
+        # SELECT devolve as linhas por ID e, sem isso, qualquer recarga
+        # perderia a ordenação e voltaria para a ordem padrão.
+        self._reaplicar_ordenacao()
+
+        # Se uma ação (cadastro/atualização) pediu para manter o foco em um
+        # ID específico, seleciona e rola a tabela até essa linha.
+        if self._id_para_selecionar is not None:
+            self._selecionar_por_id(self._id_para_selecionar)
+            self._id_para_selecionar = None
+
+        self._mostrar_carregando(False)
 
     def usu_carregar_campos(self, event):
         sel = self.tab_usu_tree.selection()
@@ -243,22 +510,29 @@ class AbaUsucapiao:
                         self.e_idsei_usu.delete(0, 'end'); self.e_idsei_usu.insert(0, reg.get('Id SEI') or "")
                         self.e_interessado_usu.delete(0, 'end'); self.e_interessado_usu.insert(0, reg['interessado'])
                         self.e_sec_usu.delete(0, 'end'); self.e_sec_usu.insert(0, reg['secretarias'])
-                        
+
                         env_str = reg['data_envio'].strftime('%d/%m/%Y') if hasattr(reg['data_envio'], 'strftime') else (reg['data_envio'] or "")
                         self.e_envio_usu.delete(0, 'end'); self.e_envio_usu.insert(0, env_str)
-                        
+
                         self.cmb_tipo_usu.set(reg['tipo_solicitacao'])
                         self.chk_sec1_var.set(reg['sec1_ok'])
                         self.chk_sec2_var.set(reg['sec2_ok'])
                         self.chk_sec3_var.set(reg['sec3_ok'])
                         self.atualizar_rotulos_secretarias()
                         self.btn_salvar_usu.configure(state="disabled")
-                finally: cur.close(); con.close()
+                except mysql.connector.Error as err:
+                    logging.error(f"Erro ao carregar processo: {err}")
+                    messagebox.showerror("Erro no Banco", f"Falha ao carregar os dados do processo:\n{err}")
+                finally:
+                    cur.close(); con.close()
 
     def usu_atualizar(self):
         if not self.id_usucapiao_sel: messagebox.showwarning("Aviso", "Selecione um processo."); return
         self.aplicar_mascara_campo(self.e_saj_usu, formatar_saj)
         self.aplicar_mascara_campo(self.e_sei_usu, formatar_sei)
+
+        if not self.e_saj_usu.get().strip() or not self.e_interessado_usu.get().strip():
+            messagebox.showwarning("Aviso", "SAJ e Interessado são obrigatórios!"); return
 
         envio_fmt, e_err = formatar_e_validar_data(self.e_envio_usu.get())
         if e_err: messagebox.showwarning("Data Envio", e_err); return
@@ -281,9 +555,15 @@ class AbaUsucapiao:
                     secretarias, envio_fmt, self.cmb_tipo_usu.get(), s1, s2, s3, status_txt, self.id_usucapiao_sel
                 ))
                 con.commit()
-                messagebox.showinfo("Sucesso", "Processo atualizado!")
+                # Mantém a mesma linha selecionada/visível após a lista recarregar.
+                self._id_para_selecionar = self.id_usucapiao_sel
+                self._mostrar_toast("✔ Processo atualizado!", "#1f538d")
                 self.usu_limpar_campos(); self.usu_listar()
-            finally: cur.close(); con.close()
+            except mysql.connector.Error as err:
+                logging.error(f"Erro ao atualizar usucapião: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao atualizar o processo:\n{err}")
+            finally:
+                cur.close(); con.close()
 
     def usu_excluir(self):
         sel = self.tab_usu_tree.selection()
@@ -296,8 +576,13 @@ class AbaUsucapiao:
                     cur = con.cursor()
                     cur.execute("DELETE FROM tb_usucapiao WHERE id=%s", (item_id,))
                     con.commit()
+                    self._mostrar_toast("🗑 Processo excluído", "#a83232")
                     self.usu_limpar_campos(); self.usu_listar()
-                finally: cur.close(); con.close()
+                except mysql.connector.Error as err:
+                    logging.error(f"Erro ao excluir usucapião: {err}")
+                    messagebox.showerror("Erro no Banco", f"Falha ao excluir o processo:\n{err}")
+                finally:
+                    cur.close(); con.close()
 
     def usu_concluir(self):
         sel = self.tab_usu_tree.selection()
@@ -325,8 +610,13 @@ class AbaUsucapiao:
                     ))
                     cur.execute("DELETE FROM tb_usucapiao WHERE id=%s", (item_id,))
                     con.commit()
+                    self._mostrar_toast("✔ Processo concluído!", "#2e7d32")
                     self.usu_limpar_campos(); self.usu_listar()
-            finally: cur.close(); con.close()
+            except mysql.connector.Error as err:
+                logging.error(f"Erro ao concluir usucapião: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao concluir o processo:\n{err}")
+            finally:
+                cur.close(); con.close()
 
     def usu_abrir_concluidas(self):
         janela = ctk.CTkToplevel(self.master)
@@ -355,7 +645,11 @@ class AbaUsucapiao:
                         row['id'], row['saj'], row['sei'], row.get('Id SEI') or "-", row['interessado'], row['secretarias'], 
                         env, row['tipo_solicitacao'], row['usuario_criacao'] or "N/A", row['usuario_conclusao'] or "N/A", conc
                     ))
-            finally: cur.close(); con.close()
+            except mysql.connector.Error as err:
+                logging.error(f"Erro ao carregar histórico de usucapião: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao carregar o histórico:\n{err}", parent=janela)
+            finally:
+                cur.close(); con.close()
 
         self.app.ajustar_colunas_treeview(tb_conc)
 
@@ -382,7 +676,11 @@ class AbaUsucapiao:
                         cr.execute("DELETE FROM tb_usucapiao_concluidas WHERE id=%s", (item_id,))
                         c.commit()
                         janela.destroy(); self.usu_listar()
-                    finally: cr.close(); c.close()
+                    except mysql.connector.Error as err:
+                        logging.error(f"Erro ao restaurar usucapião: {err}")
+                        messagebox.showerror("Erro no Banco", f"Falha ao restaurar o processo:\n{err}", parent=janela)
+                    finally:
+                        cr.close(); c.close()
 
         if self.app.perfil_atual == 'admin':
             ctk.CTkButton(janela, text="↩ Restaurar Selecionado (Admin)", command=restaurar, fg_color="#b37400", hover_color="orange").pack(pady=10)
