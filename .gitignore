@@ -1,10 +1,2 @@
-.venv/
-build/
-dist/
-*.log
-__pycache__/
-sei_session.json
-config.ini
 SistemaDeGestao.spec
-reset_admin.py
-temp_cobrancas/
+dist
