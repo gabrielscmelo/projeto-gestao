@@ -2847,6 +2847,14 @@
   ('_zstd.pyd',
    'C:\\Users\\gabriel.costa\\AppData\\Local\\Programs\\Python\\Python314\\DLLs\\_zstd.pyd',
    'EXTENSION'),
+  ('assets\\assinatura_iranildo.png',
+   'C:\\Users\\gabriel.costa\\Documents\\Projeto '
+   'Gestão\\assets\\assinatura_iranildo.png',
+   'DATA'),
+  ('assets\\brasao_recife.png',
+   'C:\\Users\\gabriel.costa\\Documents\\Projeto '
+   'Gestão\\assets\\brasao_recife.png',
+   'DATA'),
   ('assets\\icon.ico',
    'C:\\Users\\gabriel.costa\\Documents\\Projeto Gestão\\assets\\icon.ico',
    'DATA'),

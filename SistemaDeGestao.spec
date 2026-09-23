@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
+
+datas = [('assets', 'assets'), ('secret.key', '.'), ('config.ini.enc', '.')]
+hiddenimports = ['mysql.connector.locales.eng']
+datas += collect_data_files('customtkinter')
+hiddenimports += collect_submodules('reportlab')
+hiddenimports += collect_submodules('customtkinter')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('secret.key', '.'), ('config.ini.enc', '.')],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

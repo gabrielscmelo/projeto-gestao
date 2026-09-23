@@ -2,7 +2,7 @@ import re
 import logging
 import threading
 from datetime import datetime
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, Menu, BooleanVar
 import mysql.connector
 import customtkinter as ctk
 
@@ -40,13 +40,17 @@ class AbaCobranca:
         # em cob_cancelar_robo() sobre os limites dessa funcionalidade.
         self._robo_cancelar_solicitado = False
 
+        # IDs das diligências marcadas (checkbox) para cobrança pelo robô.
+        self._ids_marcados = set()
+
         self.montar_aba()
 
     # ------------------------------------------------------------------
     # ORDENAÇÃO DE COLUNAS (persistente entre recargas da lista)
     # ------------------------------------------------------------------
-    def _ordenar_coluna(self, col, reverse):
-        itens = [(self.tab_cob_tree.set(k, col), k) for k in self.tab_cob_tree.get_children('')]
+    def _ordenar_coluna(self, col, reverse, tree=None):
+        tree = tree or self.tab_cob_tree
+        itens = [(tree.set(k, col), k) for k in tree.get_children('')]
 
         def chave_ordenacao(item):
             val = str(item[0]).strip()
@@ -70,12 +74,15 @@ class AbaCobranca:
             itens.sort(key=lambda x: str(x[0]).lower(), reverse=reverse)
 
         for index, (val, k) in enumerate(itens):
-            self.tab_cob_tree.move(k, '', index)
+            tree.move(k, '', index)
 
-        self.tab_cob_tree.heading(
+        tree.heading(
             col,
-            command=lambda _col=col: self._ordenar_coluna(_col, not reverse)
+            command=lambda _col=col: self._ordenar_coluna(_col, not reverse, tree)
         )
+
+        if tree is not self.tab_cob_tree:
+            return
 
         self._sort_coluna_atual = col
         self._sort_reverse_atual = reverse
@@ -211,7 +218,7 @@ class AbaCobranca:
         ctk.CTkLabel(self.f_form_cob, text="Prorrogação para Nova Cobrança:", font=("Arial", 11, "bold")).pack(anchor="w", padx=15, pady=(2, 0))
         self.cmb_prazo_cob = ctk.CTkComboBox(self.f_form_cob, values=["+5 dias", "+10 dias", "+15 dias", "+30 dias"], width=260)
         self.cmb_prazo_cob.pack(pady=2)
-        self.cmb_prazo_cob.set("+5 dias")
+        self.cmb_prazo_cob.set("+15 dias")
 
         self.e_obs_cob = ctk.CTkEntry(self.f_form_cob, placeholder_text="Observações / Resumo da Cobrança", width=260)
         self.e_obs_cob.pack(pady=2)
@@ -261,14 +268,30 @@ class AbaCobranca:
         # banco está em andamento.
         self.lbl_carregando_cob = ctk.CTkLabel(f_pesq, text="⏳ Carregando...", text_color="gray")
 
-        cols = ("id", "saj", "sei", "diligencia", "secretaria", "caminho", "id_sei", "envio", "prazo", "dias_atraso")
+        cols = ("sel", "id", "saj", "sei", "diligencia", "secretaria", "caminho", "id_sei", "envio", "prazo", "dias_atraso")
         self.tab_cob_tree = ttk.Treeview(self.f_lista_cob, columns=cols, show="headings", selectmode="browse")
 
-        headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO VENCIDO", "ATRASO")
+        headers = ("✔", "ID", "SAJ", "SEI", "DILIGÊNCIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO VENCIDO", "ATRASO")
         self._col_headers = dict(zip(cols, headers))
         for c, h in zip(cols, headers):
             self.tab_cob_tree.heading(c, text=h, command=lambda _col=c: self._ordenar_coluna(_col, False))
 
+        col_vars_cob = {c: BooleanVar(value=True) for c in cols if c != "sel"}
+        menu_cols_cob = Menu(self.master, tearoff=0)
+        for c, h in zip(cols, headers):
+            if c == "sel":
+                continue
+            menu_cols_cob.add_checkbutton(
+                label=h, variable=col_vars_cob[c],
+                command=lambda: self.tab_cob_tree.configure(displaycolumns=["sel"] + [c for c in cols if c != "sel" and col_vars_cob[c].get()])
+            )
+        ctk.CTkButton(
+            f_pesq, text="☰", width=36,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=lambda: menu_cols_cob.tk_popup(self.master.winfo_pointerx(), self.master.winfo_pointery())
+        ).pack(side="right", padx=(10, 0))
+
+        self.tab_cob_tree.column("sel", width=30, anchor="center")
         self.tab_cob_tree.column("id", width=40, anchor="center")
         self.tab_cob_tree.column("saj", width=110)
         self.tab_cob_tree.column("sei", width=110)
@@ -285,6 +308,7 @@ class AbaCobranca:
         self.tab_cob_tree.pack(pady=10, padx=10, fill="both", expand=True)
         self.tab_cob_tree.bind("<<TreeviewSelect>>", self.cob_carregar_campos)
         self.tab_cob_tree.bind("<Double-1>", self.cob_carregar_campos)
+        self.tab_cob_tree.bind("<Button-1>", self._toggle_check_cob, add="+")
 
         f_act = ctk.CTkFrame(self.f_lista_cob, fg_color="transparent")
         f_act.pack(fill="x", padx=10, pady=(0, 10))
@@ -312,10 +336,7 @@ class AbaCobranca:
             width=170
         ).pack(side="right", padx=5)
 
-        self.cob_listar()
-
-    # ----------------------------------------------------------------------
-    # AUTOMAÇÃO DO ROBÔ
+        self.master.after(100, self.cob_listar)
     # ----------------------------------------------------------------------
     def cob_executar_robo_automacao(self):
         usuario_sei = self.e_user_sei.get().strip()
@@ -324,6 +345,11 @@ class AbaCobranca:
         if not usuario_sei or not senha_sei:
             messagebox.showwarning("Credenciais Ausentes", "Informe o Usuário e a Senha do SEI para iniciar a automação.")
             return
+
+        if not self._ids_marcados:
+            messagebox.showwarning("Nenhuma Diligência Marcada", "Marque o checkbox das diligências que o robô deve cobrar.")
+            return
+        ids_dil = list(self._ids_marcados)
 
         texto_prorrogacao = self.cmb_prazo_cob.get()
         dias_prorrogacao = int(re.sub(r"\D", "", texto_prorrogacao)) if texto_prorrogacao else 5
@@ -352,7 +378,8 @@ class AbaCobranca:
                         usuario_app=usuario_app,
                         dias_prorrogacao=dias_prorrogacao,
                         callback_log=self.adicionar_log_console,
-                        deve_parar=lambda: self._robo_cancelar_solicitado
+                        deve_parar=lambda: self._robo_cancelar_solicitado,
+                        diligencias_ids=ids_dil
                     )
                 except TypeError:
                     iniciar_automacao_completa(
@@ -360,13 +387,19 @@ class AbaCobranca:
                         senha_sei=senha_sei,
                         usuario_app=usuario_app,
                         dias_prorrogacao=dias_prorrogacao,
-                        callback_log=self.adicionar_log_console
+                        callback_log=self.adicionar_log_console,
+                        diligencias_ids=ids_dil
                     )
             except Exception as err:
                 logging.error(f"Erro na execução do robô: {err}")
                 self.adicionar_log_console(f"❌ [Erro Crítico] Falha geral na execução do robô: {err}")
             finally:
-                self.master.after(0, self._finalizar_execucao_robo)
+                janela = self.master.winfo_toplevel()
+                try:
+                    if janela.winfo_exists():
+                        janela.after(0, self._finalizar_execucao_robo)
+                except RuntimeError:
+                    pass
 
         threading.Thread(target=_rodar_thread, daemon=True).start()
 
@@ -409,12 +442,18 @@ class AbaCobranca:
                 self.txt_log_robo.see("end")
                 self.txt_log_robo.configure(state="disabled")
 
-            self.master.after(0, _update)
+            janela = self.master.winfo_toplevel()
+            try:
+                if janela.winfo_exists():
+                    janela.after(0, _update)
+            except RuntimeError:
+                pass
 
     def _finalizar_execucao_robo(self):
         self.btn_executar_robo.configure(state="normal", text="🚀 Executar Robô em Lote")
         self.btn_parar_robo.pack_forget()
         self._robo_cancelar_solicitado = False
+        self._ids_marcados.clear()
         self.cob_listar()
         if hasattr(self.app, 'aba_diligencias'):
             self.app.aba_diligencias.dil_listar()
@@ -437,6 +476,7 @@ class AbaCobranca:
         self._listar_seq += 1
         seq_atual = self._listar_seq
         self._mostrar_carregando(True)
+        janela = self.master.winfo_toplevel()  # captura na thread principal
 
         def tarefa_banco():
             con = obter_conexao()
@@ -454,16 +494,21 @@ class AbaCobranca:
                     cur.execute(query, tuple(params))
                     atrasadas = cur.fetchall()
 
-                    self.master.after(0, lambda: self._preencher_tabela(atrasadas, seq_atual))
+                    if janela.winfo_exists():
+                        janela.after(0, lambda: self._preencher_tabela(atrasadas, seq_atual))
                 except mysql.connector.Error as err:
                     logging.error(f"Erro ao listar cobranças: {err}")
-                    self.master.after(0, lambda: self._mostrar_carregando(False))
-                    self.master.after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista de cobranças:\n{err}"))
+                    if janela.winfo_exists():
+                        janela.after(0, lambda: self._mostrar_carregando(False))
+                        janela.after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista de cobranças:\n{err}"))
+                except RuntimeError:
+                    pass  # janela foi destruída/trocada (ex.: logout) durante a consulta
                 finally: 
                     cur.close()
                     con.close()
             else:
-                self.master.after(0, lambda: self._mostrar_carregando(False))
+                if janela.winfo_exists():
+                    janela.after(0, lambda: self._mostrar_carregando(False))
 
         threading.Thread(target=tarefa_banco, daemon=True).start()
 
@@ -487,6 +532,7 @@ class AbaCobranca:
             id_sei_valor = row.get('id_sei') or "-"
 
             self.tab_cob_tree.insert("", "end", values=(
+                "☑" if row['id'] in self._ids_marcados else "☐",
                 row['id'], 
                 row['saj'] or "-", 
                 row['sei'] or "-", 
@@ -507,22 +553,38 @@ class AbaCobranca:
         self._reaplicar_ordenacao()
         self._mostrar_carregando(False)
 
+    def _toggle_check_cob(self, event):
+        if self.tab_cob_tree.identify_region(event.x, event.y) != "cell" or self.tab_cob_tree.identify_column(event.x) != "#1":
+            return
+        row = self.tab_cob_tree.identify_row(event.y)
+        if not row:
+            return
+        vals = list(self.tab_cob_tree.item(row, "values"))
+        id_dil = int(vals[1])
+        if id_dil in self._ids_marcados:
+            self._ids_marcados.discard(id_dil)
+            vals[0] = "☐"
+        else:
+            self._ids_marcados.add(id_dil)
+            vals[0] = "☑"
+        self.tab_cob_tree.item(row, values=vals)
+
     def cob_carregar_campos(self, event=None):
         sel = self.tab_cob_tree.selection()
         if sel:
             v = self.tab_cob_tree.item(sel[0], "values")
-            self.id_diligencia_cob_sel = v[0]
-            self.e_saj_cob.delete(0, 'end'); self.e_saj_cob.insert(0, v[1] if v[1] != "-" else "")
-            self.e_sei_cob.delete(0, 'end'); self.e_sei_cob.insert(0, v[2] if v[2] != "-" else "")
-            self.e_orgao_cob.delete(0, 'end'); self.e_orgao_cob.insert(0, v[4] if v[4] != "-" else "")
-            self.e_caminho_cob.delete(0, 'end'); self.e_caminho_cob.insert(0, v[5] if v[5] != "-" else "")
+            self.id_diligencia_cob_sel = v[1]
+            self.e_saj_cob.delete(0, 'end'); self.e_saj_cob.insert(0, v[2] if v[2] != "-" else "")
+            self.e_sei_cob.delete(0, 'end'); self.e_sei_cob.insert(0, v[3] if v[3] != "-" else "")
+            self.e_orgao_cob.delete(0, 'end'); self.e_orgao_cob.insert(0, v[5] if v[5] != "-" else "")
+            self.e_caminho_cob.delete(0, 'end'); self.e_caminho_cob.insert(0, v[6] if v[6] != "-" else "")
 
     def cob_registrar_cobranca(self):
         if not self.id_diligencia_cob_sel:
             sel = self.tab_cob_tree.selection()
             if sel:
                 v = self.tab_cob_tree.item(sel[0], "values")
-                self.id_diligencia_cob_sel = v[0]
+                self.id_diligencia_cob_sel = v[1]
 
         if not self.id_diligencia_cob_sel:
             messagebox.showwarning("Aviso", "Selecione uma diligência na tabela para registrar a cobrança.")
@@ -606,7 +668,19 @@ class AbaCobranca:
 
         headers = ("ID", "SAJ", "SEI", "Órgão/Secretaria", "Caminho", "ID SEI", "Data Cobrança", "Meio", "Prorrogação", "Observação", "Registrado Por")
         for c, h in zip(cols, headers):
-            tb_hist.heading(c, text=h)
+            tb_hist.heading(c, text=h, command=lambda _col=c: self._ordenar_coluna(_col, False, tb_hist))
+
+        col_vars_hist = {c: BooleanVar(value=True) for c in cols}
+        menu_cols_hist = Menu(janela, tearoff=0)
+        for c, h in zip(cols, headers):
+            menu_cols_hist.add_checkbutton(
+                label=h, variable=col_vars_hist[c],
+                command=lambda: tb_hist.configure(displaycolumns=[c for c in cols if col_vars_hist[c].get()] or cols)
+            )
+        ctk.CTkButton(
+            f_busca_hist, text="☰ Colunas", width=90,
+            command=lambda: menu_cols_hist.tk_popup(janela.winfo_pointerx(), janela.winfo_pointery())
+        ).pack(side="left", padx=5)
 
         tb_hist.column("id", width=40, anchor="center")
         tb_hist.column("saj", width=100)

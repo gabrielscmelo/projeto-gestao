@@ -1,7 +1,7 @@
 import re
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from tkinter import ttk, messagebox
 import customtkinter as ctk
 import mysql.connector
@@ -9,6 +9,7 @@ from database.connection import obter_conexao
 from utils.debouncer import Debouncer
 from utils.pdf_exporter import exportar_treeview_pdf
 from utils.formatters import aplicar_mascara_data_auto, formatar_e_validar_data, formatar_saj, formatar_sei
+from utils.oficio_usucapiao import gerar_oficios_usucapiao
 
 class AbaUsucapiao:
     def __init__(self, master, app_instance):
@@ -113,6 +114,16 @@ class AbaUsucapiao:
         else:
             self.btn_ordenacao_ativa.configure(fg_color="#454545", hover_color="#2b2b2b")
 
+    def atualizar_cores_tema(self, modo=None):
+        """Reconfigura as cores das tags de status conforme o tema atual (chamado também pelo main_view ao trocar o tema)."""
+        modo = modo or ctk.get_appearance_mode()
+        if modo == "Light":
+            self.tab_usu_tree.tag_configure("concluido_usu", background="#d4edda", foreground="#155724")
+            self.tab_usu_tree.tag_configure("parcial_usu", background="#fff3cd", foreground="#856404")
+        else:
+            self.tab_usu_tree.tag_configure("concluido_usu", background="#1b4d2b", foreground="#ffffff")
+            self.tab_usu_tree.tag_configure("parcial_usu", background="#7a5a12", foreground="#ffffff")
+
     def usu_limpar_ordenacao(self):
         """Limpa a ordenação ativa, voltando a lista para a ordem por ID."""
         self._sort_coluna_atual = None
@@ -171,7 +182,7 @@ class AbaUsucapiao:
             self.lbl_carregando_usu.pack_forget()
 
     def montar_aba(self):
-        self.f_form_usu = ctk.CTkFrame(self.master, width=320)
+        self.f_form_usu = ctk.CTkScrollableFrame(self.master, width=300)
         self.f_form_usu.pack(side="left", fill="y", padx=10, pady=10)
 
         ctk.CTkLabel(self.f_form_usu, text="Lotação Usucapião", font=("Arial", 18, "bold")).pack(pady=15)
@@ -197,6 +208,15 @@ class AbaUsucapiao:
         self.e_envio_usu = ctk.CTkEntry(self.f_form_usu, placeholder_text="Data Envio (DD/MM/AAAA)", width=260)
         self.e_envio_usu.pack(pady=6)
         self.e_envio_usu.bind("<KeyRelease>", aplicar_mascara_data_auto)
+
+        self.e_oficio_usu = ctk.CTkEntry(self.f_form_usu, placeholder_text="Nº Ofício (vazio = automático)", width=260)
+        self.e_oficio_usu.pack(pady=6)
+
+        self.e_endereco_usu = ctk.CTkEntry(self.f_form_usu, placeholder_text="Endereço do Imóvel (objeto do usucapião)", width=260)
+        self.e_endereco_usu.pack(pady=6)
+
+        self.e_prazo_usu = ctk.CTkEntry(self.f_form_usu, placeholder_text="Prazo p/ Resposta (dias, ex: 5)", width=260)
+        self.e_prazo_usu.pack(pady=6)
 
         ctk.CTkLabel(self.f_form_usu, text="Tipo de Solicitação:", font=("Arial", 11, "bold")).pack(anchor="w", padx=30, pady=(4, 0))
         self.cmb_tipo_usu = ctk.CTkComboBox(self.f_form_usu, values=["Judicial", "Extrajudicial"], width=260)
@@ -293,10 +313,9 @@ class AbaUsucapiao:
         self.tab_usu_tree.column("enviado_por", width=90)
 
         # Cores de status: verde quando todas as secretarias já responderam,
-        # laranja quando há resposta parcial, para permitir escanear a lista
-        # visualmente em vez de ler o texto do status linha a linha.
-        self.tab_usu_tree.tag_configure("concluido_usu", background="#1b4d2b", foreground="#ffffff")
-        self.tab_usu_tree.tag_configure("parcial_usu", background="#7a5a12", foreground="#ffffff")
+        # laranja quando há resposta parcial. Ajustadas conforme o tema
+        # (dark/light) para não ficarem escuras/estranhas no Modo Claro.
+        self.atualizar_cores_tema()
 
         self.tab_usu_tree.pack(pady=10, padx=10, fill="both", expand=True)
         self.tab_usu_tree.bind("<Double-1>", self.usu_carregar_campos)
@@ -310,6 +329,8 @@ class AbaUsucapiao:
         ctk.CTkButton(f_act, text="✔ Concluir Usucapião", command=self.usu_concluir, fg_color="#1f538d", hover_color="#14375e", width=140).pack(side="left", padx=5)
         ctk.CTkButton(f_act, text="Ver Concluídas", command=self.usu_abrir_concluidas, fg_color="#454545", hover_color="#2b2b2b", width=110).pack(side="left", padx=5)
         ctk.CTkButton(f_act, text="📄 Gerar PDF", command=lambda: exportar_treeview_pdf(self.tab_usu_tree, "Relatório de Usucapião"), fg_color="#2e7d32", hover_color="#1b5e20", width=110).pack(side="left", padx=5)
+        ctk.CTkButton(f_act, text="📨 Gerar Ofícios", command=self.usu_gerar_oficios, fg_color="#6a1b9a", hover_color="#4a148c", width=120).pack(side="left", padx=5)
+        ctk.CTkButton(f_act, text="⏰ Cobrança Usucapião", command=self.usu_abrir_cobranca, fg_color="#b37400", hover_color="#8a5a00", width=150).pack(side="left", padx=5)
         ctk.CTkButton(f_act, text="✖ Excluir", command=self.usu_excluir, fg_color="red", hover_color="darkred", width=110).pack(side="right", padx=5)
 
         self.usu_listar()
@@ -363,9 +384,22 @@ class AbaUsucapiao:
             return f"Resp: {', '.join(respondidas)}"
         return "Aguardando Respostas"
 
+    def _proximo_numero_oficio(self, cur):
+        """Gera 'NNN/ANO' pegando o maior número já usado no ano corrente."""
+        ano = datetime.now().year
+        cur.execute(
+            "SELECT numero_oficio FROM tb_usucapiao WHERE numero_oficio LIKE %s "
+            "ORDER BY CAST(SUBSTRING_INDEX(numero_oficio,'/',1) AS UNSIGNED) DESC LIMIT 1",
+            (f"%/{ano}",)
+        )
+        row = cur.fetchone()
+        maior = int(row[0].split('/')[0]) if row and row[0] else 0
+        return f"{maior + 1}/{ano}"
+
     def usu_limpar_campos(self):
         self.id_usucapiao_sel = None
-        for e in (self.e_saj_usu, self.e_sei_usu, self.e_idsei_usu, self.e_interessado_usu, self.e_sec_usu, self.e_envio_usu):
+        for e in (self.e_saj_usu, self.e_sei_usu, self.e_idsei_usu, self.e_interessado_usu, self.e_sec_usu,
+                  self.e_envio_usu, self.e_oficio_usu, self.e_endereco_usu, self.e_prazo_usu):
             e.delete(0, 'end')
         self.cmb_tipo_usu.set("Judicial")
         self.chk_sec1_var.set(0); self.chk_sec2_var.set(0); self.chk_sec3_var.set(0)
@@ -390,16 +424,22 @@ class AbaUsucapiao:
 
         s1, s2, s3 = self.chk_sec1_var.get(), self.chk_sec2_var.get(), self.chk_sec3_var.get()
         status_txt = self.calcular_status_usucapiao(s1, s2, s3, secretarias)
+        endereco = self.e_endereco_usu.get().strip()
+        dias_prazo = self.e_prazo_usu.get().strip()
+        numero_oficio = self.e_oficio_usu.get().strip()
 
         con = obter_conexao()
         if con:
             try:
                 cur = con.cursor()
+                if not numero_oficio:
+                    numero_oficio = self._proximo_numero_oficio(cur)
                 sql = """
-                    INSERT INTO tb_usucapiao (saj, sei, `Id SEI`, interessado, secretarias, data_envio, tipo_solicitacao, sec1_ok, sec2_ok, sec3_ok, status, usuario_criacao, data_criacao)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    INSERT INTO tb_usucapiao (saj, sei, `Id SEI`, interessado, secretarias, data_envio, tipo_solicitacao, sec1_ok, sec2_ok, sec3_ok, status, endereco_objeto, numero_oficio, dias_prazo_resposta, usuario_criacao, data_criacao)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 """
-                cur.execute(sql, (saj, sei, id_sei, interessado, secretarias, envio_fmt, tipo, s1, s2, s3, status_txt, self.app.usuario_atual))
+                cur.execute(sql, (saj, sei, id_sei, interessado, secretarias, envio_fmt, tipo, s1, s2, s3, status_txt,
+                                   endereco or None, numero_oficio or None, dias_prazo or None, self.app.usuario_atual))
                 con.commit()
                 # Guarda o ID recém-criado para que, após a lista recarregar,
                 # o novo processo já apareça selecionado e visível.
@@ -420,6 +460,7 @@ class AbaUsucapiao:
         self._listar_seq += 1
         seq_atual = self._listar_seq
         self._mostrar_carregando(True)
+        janela = self.master.winfo_toplevel()  # captura na thread principal
 
         def tarefa_banco():
             con = obter_conexao()
@@ -441,15 +482,20 @@ class AbaUsucapiao:
                     linhas = cur.fetchall()
 
                     # Atualiza a interface gráfica com segurança
-                    self.master.winfo_toplevel().after(0, lambda: self._preencher_tabela(linhas, seq_atual))
+                    if janela.winfo_exists():
+                        janela.after(0, lambda: self._preencher_tabela(linhas, seq_atual))
                 except mysql.connector.Error as err:
                     logging.error(f"Erro ao listar usucapião: {err}")
-                    self.master.winfo_toplevel().after(0, lambda: self._mostrar_carregando(False))
-                    self.master.winfo_toplevel().after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista:\n{err}"))
+                    if janela.winfo_exists():
+                        janela.after(0, lambda: self._mostrar_carregando(False))
+                        janela.after(0, lambda: messagebox.showerror("Erro no Banco", f"Falha ao carregar a lista:\n{err}"))
+                except RuntimeError:
+                    pass  # janela foi destruída/trocada durante a consulta
                 finally:
                     cur.close(); con.close()
             else:
-                self.master.winfo_toplevel().after(0, lambda: self._mostrar_carregando(False))
+                if janela.winfo_exists():
+                    janela.after(0, lambda: self._mostrar_carregando(False))
 
         threading.Thread(target=tarefa_banco, daemon=True).start()
 
@@ -514,6 +560,10 @@ class AbaUsucapiao:
                         env_str = reg['data_envio'].strftime('%d/%m/%Y') if hasattr(reg['data_envio'], 'strftime') else (reg['data_envio'] or "")
                         self.e_envio_usu.delete(0, 'end'); self.e_envio_usu.insert(0, env_str)
 
+                        self.e_oficio_usu.delete(0, 'end'); self.e_oficio_usu.insert(0, reg.get('numero_oficio') or "")
+                        self.e_endereco_usu.delete(0, 'end'); self.e_endereco_usu.insert(0, reg.get('endereco_objeto') or "")
+                        self.e_prazo_usu.delete(0, 'end'); self.e_prazo_usu.insert(0, str(reg.get('dias_prazo_resposta') or ""))
+
                         self.cmb_tipo_usu.set(reg['tipo_solicitacao'])
                         self.chk_sec1_var.set(reg['sec1_ok'])
                         self.chk_sec2_var.set(reg['sec2_ok'])
@@ -547,12 +597,15 @@ class AbaUsucapiao:
                 cur = con.cursor()
                 sql = """
                     UPDATE tb_usucapiao 
-                    SET saj=%s, sei=%s, `Id SEI`=%s, interessado=%s, secretarias=%s, data_envio=%s, tipo_solicitacao=%s, sec1_ok=%s, sec2_ok=%s, sec3_ok=%s, status=%s
+                    SET saj=%s, sei=%s, `Id SEI`=%s, interessado=%s, secretarias=%s, data_envio=%s, tipo_solicitacao=%s, sec1_ok=%s, sec2_ok=%s, sec3_ok=%s, status=%s,
+                        endereco_objeto=%s, numero_oficio=%s, dias_prazo_resposta=%s
                     WHERE id=%s
                 """
                 cur.execute(sql, (
                     self.e_saj_usu.get(), self.e_sei_usu.get(), self.e_idsei_usu.get().strip(), self.e_interessado_usu.get(),
-                    secretarias, envio_fmt, self.cmb_tipo_usu.get(), s1, s2, s3, status_txt, self.id_usucapiao_sel
+                    secretarias, envio_fmt, self.cmb_tipo_usu.get(), s1, s2, s3, status_txt,
+                    self.e_endereco_usu.get().strip() or None, self.e_oficio_usu.get().strip() or None,
+                    self.e_prazo_usu.get().strip() or None, self.id_usucapiao_sel
                 ))
                 con.commit()
                 # Mantém a mesma linha selecionada/visível após a lista recarregar.
@@ -583,6 +636,112 @@ class AbaUsucapiao:
                     messagebox.showerror("Erro no Banco", f"Falha ao excluir o processo:\n{err}")
                 finally:
                     cur.close(); con.close()
+
+    def usu_gerar_oficios(self):
+        sel = self.tab_usu_tree.selection()
+        if not sel: messagebox.showwarning("Aviso", "Selecione um processo."); return
+        item_id = self.tab_usu_tree.item(sel[0], "values")[0]
+
+        con = obter_conexao()
+        if not con: return
+        try:
+            cur = con.cursor(dictionary=True)
+            cur.execute("SELECT * FROM tb_usucapiao WHERE id=%s", (item_id,))
+            reg = cur.fetchone()
+            if not reg: return
+
+            if not reg.get('endereco_objeto'):
+                messagebox.showwarning("Aviso", "Informe e salve o endereço do imóvel antes de gerar os ofícios."); return
+
+            numero_oficio = reg.get('numero_oficio')
+            if not numero_oficio:
+                numero_oficio = self._proximo_numero_oficio(cur)
+
+            dias = int(reg.get('dias_prazo_resposta') or 5)
+            hoje = datetime.now().date()
+            prazo_data = hoje + timedelta(days=dias)
+
+            caminhos = gerar_oficios_usucapiao(
+                numero_oficio_base=numero_oficio,
+                processo=reg['saj'] or reg['sei'] or "",
+                interessado=reg['interessado'],
+                endereco=reg['endereco_objeto'],
+                prazo_dias=dias,
+            )
+
+            cur.execute(
+                "UPDATE tb_usucapiao SET numero_oficio=%s, prazo_resposta_data=%s WHERE id=%s",
+                (numero_oficio, prazo_data, item_id)
+            )
+            con.commit()
+            self._mostrar_toast("📨 Ofícios gerados!", "#6a1b9a")
+            messagebox.showinfo("Ofícios Gerados", "Arquivos:\n" + "\n".join(caminhos))
+            self.usu_listar()
+        except mysql.connector.Error as err:
+            logging.error(f"Erro ao gerar ofícios: {err}")
+            messagebox.showerror("Erro no Banco", f"Falha ao gerar ofícios:\n{err}")
+        finally:
+            cur.close(); con.close()
+
+    def usu_abrir_cobranca(self):
+        """Lista processos com prazo de resposta vencido e ainda não concluídos,
+        permitindo registrar o número do SEI de cobrança."""
+        janela = ctk.CTkToplevel(self.master)
+        janela.title("Cobrança Usucapião")
+        janela.after(0, lambda: janela.wm_state('zoomed'))
+        janela.transient(self.master)
+
+        ctk.CTkLabel(janela, text="Processos com Prazo de Resposta Vencido", font=("Arial", 16, "bold")).pack(pady=10)
+        cols = ("id", "saj", "interessado", "endereco", "prazo", "status", "sei_cobranca")
+        tb = ttk.Treeview(janela, columns=cols, show="headings")
+        for c, t in zip(cols, ("ID", "SAJ", "Interessado", "Endereço", "Prazo", "Status", "SEI Cobrança")):
+            tb.heading(c, text=t)
+        tb.pack(fill="both", expand=True, padx=10, pady=5)
+
+        con = obter_conexao()
+        if con:
+            try:
+                cur = con.cursor(dictionary=True)
+                cur.execute(
+                    "SELECT * FROM tb_usucapiao WHERE prazo_resposta_data IS NOT NULL AND prazo_resposta_data < CURDATE() "
+                    "AND (sec1_ok + sec2_ok + sec3_ok) < 3"
+                )
+                for row in cur.fetchall():
+                    prazo_str = row['prazo_resposta_data'].strftime('%d/%m/%Y') if row['prazo_resposta_data'] else ""
+                    st = self.calcular_status_usucapiao(row['sec1_ok'], row['sec2_ok'], row['sec3_ok'], row['secretarias'] or "")
+                    tb.insert("", "end", values=(row['id'], row['saj'], row['interessado'], row.get('endereco_objeto') or "",
+                                                  prazo_str, st, row.get('sei_cobranca') or ""))
+            except mysql.connector.Error as err:
+                logging.error(f"Erro ao listar cobrança usucapião: {err}")
+                messagebox.showerror("Erro no Banco", f"Falha ao carregar cobrança:\n{err}", parent=janela)
+            finally:
+                cur.close(); con.close()
+
+        f_reg = ctk.CTkFrame(janela, fg_color="transparent")
+        f_reg.pack(fill="x", padx=10, pady=10)
+        e_sei = ctk.CTkEntry(f_reg, placeholder_text="Nº do processo SEI de cobrança", width=260)
+        e_sei.pack(side="left", padx=5)
+
+        def registrar_cobranca():
+            sel = tb.selection()
+            if not sel: return
+            item_id = tb.item(sel[0], "values")[0]
+            sei_val = e_sei.get().strip()
+            if not sei_val: return
+            c = obter_conexao()
+            if c:
+                try:
+                    cr = c.cursor()
+                    cr.execute("UPDATE tb_usucapiao SET sei_cobranca=%s, data_cobranca=NOW() WHERE id=%s", (sei_val, item_id))
+                    c.commit()
+                    tb.set(sel[0], "sei_cobranca", sei_val)
+                    e_sei.delete(0, 'end')
+                except mysql.connector.Error as err:
+                    logging.error(f"Erro ao registrar cobrança: {err}")
+                finally:
+                    cr.close(); c.close()
+
+        ctk.CTkButton(f_reg, text="Registrar Cobrança SEI", command=registrar_cobranca, fg_color="#b37400").pack(side="left", padx=5)
 
     def usu_concluir(self):
         sel = self.tab_usu_tree.selection()

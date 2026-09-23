@@ -12,6 +12,8 @@ from views.usuarios_view import JanelaUsuarios
 from views.diligencias_view import AbaDiligencias
 from views.usucapiao_view import AbaUsucapiao
 from views.cobranca_view import AbaCobranca
+from views.gestao_pessoas_view import AbaGestaoPessoas
+from utils.lotacoes import rotulo
 
 # Arquivo simples (JSON) só para lembrar a preferência de tema entre uma
 # abertura e outra do programa — antes, a escolha de "Modo Claro" se perdia
@@ -23,12 +25,25 @@ ARQUIVO_PREFERENCIAS_UI = "ui_prefs.json"
 INTERVALO_CHECAGEM_BD_MS = 30000
 
 class Aplicativo(ctk.CTk):
-    def __init__(self, usuario_atual, perfil_atual, nome_atual=None):
+    def __init__(self, usuario_atual, perfil_atual, nome_atual=None,
+                 lotacao_selecionada=None, lotacoes_permitidas=None):
         super().__init__()
         self.usuario_atual = usuario_atual
         self.perfil_atual = perfil_atual
         self.nome_atual = nome_atual if nome_atual else usuario_atual
         self.deseja_fazer_logout = False
+
+        # Lotação escolhida na tela de login (None = todas as permitidas).
+        # abas_liberadas define quais chaves de lotação esta sessão pode
+        # ver: apenas a selecionada, ou todas as permitidas ao usuário.
+        self.lotacao_selecionada = lotacao_selecionada
+        self.lotacoes_permitidas = lotacoes_permitidas or []
+        if lotacao_selecionada:
+            self.abas_liberadas = {lotacao_selecionada}
+        elif self.lotacoes_permitidas:
+            self.abas_liberadas = set(self.lotacoes_permitidas)
+        else:
+            self.abas_liberadas = {"diligencias", "usucapiao", "cobranca"}
 
         # Carrega e aplica a preferência de tema salva ANTES de montar
         # qualquer widget, para a tela já abrir no tema certo em vez de
@@ -55,6 +70,11 @@ class Aplicativo(ctk.CTk):
         self.lbl_status_bd = ctk.CTkLabel(f_top, text="🟡 Verificando conexão...", font=("Arial", 11), text_color="gray")
         self.lbl_status_bd.pack(side="left", padx=10)
 
+        # Só faz sentido oferecer troca de lotação se o usuário tem mais
+        # de uma liberada — com apenas uma não há entre o que escolher.
+        if len(self.lotacoes_permitidas) > 1:
+            ctk.CTkButton(f_top, text="🔀 Alterar Lotação", command=self.abrir_alterar_lotacao, fg_color="#555555", hover_color="#333333", height=28).pack(side="left", padx=10)
+
         if self.perfil_atual == 'admin':
             ctk.CTkButton(f_top, text="⚙ Gerenciar Usuários", command=self.abrir_gerencial_usuarios, fg_color="#3a7ebf", height=28).pack(side="left", padx=10)
 
@@ -79,31 +99,16 @@ class Aplicativo(ctk.CTk):
 
         lbl_copyright = ctk.CTkLabel(
             f_footer, 
-            text="© 2026 - Desenvolvido por Gabriel Costa | Todos os direitos reservados", 
+            text="© 2026 - Desenvolvido por Gabriel Melo - Todos os direitos reservados", 
             font=("Arial", 10), 
             text_color="gray"
         )
         lbl_copyright.pack(side="right", padx=10)
 
         # Tabview
-        self.tabview = ctk.CTkTabview(
-            self,
-            text_color=("black", "white"),
-            segmented_button_selected_color=("#1f538d", "#1f538d"),
-            segmented_button_unselected_color=("#cccccc", "#4a4d50")
-        )
-        self.tabview.pack(fill="both", expand=True, padx=10, pady=(0, 5))
-
-        self.tab_diligencias = self.tabview.add("Lotação Diligência")
-        self.tab_usucapiao = self.tabview.add("Lotação Usucapião")
-        self.tab_cobranca = self.tabview.add("Cobrança de Respostas")
-
-        # Inicializa Abas
-        self.aba_diligencias = AbaDiligencias(self.tab_diligencias, self)
-        self.aba_usucapiao = AbaUsucapiao(self.tab_usucapiao, self)
-        self.aba_cobranca = AbaCobranca(self.tab_cobranca, self)
-
-        self.configurar_estilo_treeview(self.tema_atual)
+        self.f_tabs = ctk.CTkFrame(self, fg_color="transparent")
+        self.f_tabs.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self._criar_abas()
 
         # Inicia o monitoramento periódico da conexão com o banco (atualiza
         # o indicador 🟢/🔴 na barra superior a cada 30s).
@@ -140,7 +145,7 @@ class Aplicativo(ctk.CTk):
         texto_licenca = (
             "Este software é protegido por leis de direitos autorais.\n"
             "Uso exclusivo e autorizado para a instituição.\n\n"
-            "Desenvolvido por: Gabriel Costa\n"
+            "Desenvolvido por: Gabriel Melo"
             "© 2026 Todos os direitos reservados."
         )
         
@@ -149,6 +154,63 @@ class Aplicativo(ctk.CTk):
 
     def abrir_gerencial_usuarios(self):
         JanelaUsuarios(self)
+
+    def _criar_abas(self):
+        """(Re)monta o tabview só com as abas liberadas para a lotação atual."""
+        self.tabview = ctk.CTkTabview(
+            self.f_tabs,
+            text_color=("black", "white"),
+            segmented_button_selected_color=("#1f538d", "#1f538d"),
+            segmented_button_unselected_color=("#cccccc", "#4a4d50")
+        )
+        self.tabview.pack(fill="both", expand=True)
+
+        self.aba_diligencias = None
+        self.aba_usucapiao = None
+        self.aba_cobranca = None
+        self.aba_gestao_pessoas = None
+
+        if "diligencias" in self.abas_liberadas:
+            self.tab_diligencias = self.tabview.add("Lotação Diligência")
+            self.aba_diligencias = AbaDiligencias(self.tab_diligencias, self)
+        if "usucapiao" in self.abas_liberadas:
+            self.tab_usucapiao = self.tabview.add("Lotação Usucapião")
+            self.aba_usucapiao = AbaUsucapiao(self.tab_usucapiao, self)
+        if "cobranca" in self.abas_liberadas:
+            self.tab_cobranca = self.tabview.add("Cobrança de Respostas")
+            self.aba_cobranca = AbaCobranca(self.tab_cobranca, self)
+        if "gestao_pessoas" in self.abas_liberadas:
+            self.tab_gestao_pessoas = self.tabview.add("Gestão de Pessoas")
+            self.aba_gestao_pessoas = AbaGestaoPessoas(self.tab_gestao_pessoas, self)
+
+        self.configurar_estilo_treeview(self.tema_atual)
+
+    def abrir_alterar_lotacao(self):
+        """Janela com checkboxes para escolher quais lotações ficam visíveis."""
+        janela = ctk.CTkToplevel(self)
+        janela.title("Alterar Lotação")
+        janela.geometry("300x300")
+        janela.transient(self)
+
+        ctk.CTkLabel(janela, text="Quais lotações devem aparecer?", font=("Arial", 13, "bold")).pack(pady=(20, 10))
+        vars_chk = {}
+        for chave in self.lotacoes_permitidas:
+            var = ctk.BooleanVar(value=chave in self.abas_liberadas)
+            ctk.CTkCheckBox(janela, text=rotulo(chave), variable=var, width=240).pack(pady=5, anchor="w", padx=30)
+            vars_chk[chave] = var
+        ctk.CTkButton(janela, text="Aplicar", width=240,
+                      command=lambda: self._trocar_lotacao(vars_chk, janela)).pack(pady=(20, 5))
+
+    def _trocar_lotacao(self, vars_chk, janela):
+        selecionadas = {c for c, v in vars_chk.items() if v.get()}
+        if not selecionadas:
+            messagebox.showwarning("Aviso", "Selecione ao menos uma lotação.")
+            return
+        janela.destroy()
+        self.abas_liberadas = selecionadas
+        self.lotacao_selecionada = next(iter(selecionadas)) if len(selecionadas) == 1 else None
+        self.tabview.destroy()
+        self._criar_abas()
 
     # ------------------------------------------------------------------
     # PERSISTÊNCIA DE TEMA
@@ -209,12 +271,20 @@ class Aplicativo(ctk.CTk):
             style.configure("Treeview", background="#2b2b2b", foreground="white", fieldbackground="#2b2b2b", rowheight=28, font=("Arial", 10))
             style.configure("Treeview.Heading", background="#1f1f1f", foreground="white", font=("Arial", 10, "bold"))
             style.map("Treeview", background=[("selected", "#1f538d")])
-            self.aba_diligencias.tab_dil_tree.tag_configure("vencido", background="#782525", foreground="#ffffff")
+            if self.aba_diligencias:
+                self.aba_diligencias.tab_dil_tree.tag_configure("vencido", background="#782525", foreground="#ffffff")
         else:
             style.configure("Treeview", background="#ffffff", foreground="#000000", fieldbackground="#ffffff", rowheight=28, font=("Arial", 10))
             style.configure("Treeview.Heading", background="#e0e0e0", foreground="#000000", font=("Arial", 10, "bold"))
             style.map("Treeview", background=[("selected", "#3a7ebf")])
-            self.aba_diligencias.tab_dil_tree.tag_configure("vencido", background="#f8d7da", foreground="#842029")
+            if self.aba_diligencias:
+                self.aba_diligencias.tab_dil_tree.tag_configure("vencido", background="#f8d7da", foreground="#842029")
+
+        # Demais abas com cores de fundo dependentes do tema
+        if self.aba_usucapiao:
+            self.aba_usucapiao.atualizar_cores_tema("Light" if modo != "dark" else "Dark")
+        if self.aba_gestao_pessoas:
+            self.aba_gestao_pessoas.renderizar_calendario()
 
     def alternar_tema(self):
         if self.switch_tema.get() == 1:

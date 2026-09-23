@@ -2,7 +2,7 @@ import re
 import logging
 from datetime import datetime
 from collections import Counter
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, Menu, BooleanVar
 import customtkinter as ctk
 import threading
 import mysql.connector
@@ -46,12 +46,13 @@ class AbaDiligencias:
             return True
         return bool(re.match(r'^[0-9/a-zA-Zº°\s\-]*$', texto_novo))
 
-    def _ordenar_coluna(self, col, reverse):
+    def _ordenar_coluna(self, col, reverse, tree=None):
         """
         Ordena o Treeview pela coluna clicada, tratando datas, números e texto,
         e alternando entre ordem crescente e decrescente a cada clique.
         """
-        itens = [(self.tab_dil_tree.set(k, col), k) for k in self.tab_dil_tree.get_children('')]
+        tree = tree or self.tab_dil_tree
+        itens = [(tree.set(k, col), k) for k in tree.get_children('')]
 
         def chave_ordenacao(item):
             val = str(item[0]).strip()
@@ -78,13 +79,16 @@ class AbaDiligencias:
             itens.sort(key=lambda x: str(x[0]).lower(), reverse=reverse)
 
         for index, (val, k) in enumerate(itens):
-            self.tab_dil_tree.move(k, '', index)
+            tree.move(k, '', index)
 
         # Alterna o comando para a próxima ordenação ser inversa
-        self.tab_dil_tree.heading(
+        tree.heading(
             col,
-            command=lambda _col=col: self._ordenar_coluna(_col, not reverse)
+            command=lambda _col=col: self._ordenar_coluna(_col, not reverse, tree)
         )
+
+        if tree is not self.tab_dil_tree:
+            return  # treeview secundária (ex.: histórico de concluídas): não mexe no estado da lista principal
 
         # Guarda a ordenação atual para que possa ser reaplicada depois que a
         # lista for recarregada do banco (ver _reaplicar_ordenacao).
@@ -261,11 +265,11 @@ class AbaDiligencias:
         # COMBOBOX DA CATEGORIA
         self.cmb_categoria = ctk.CTkComboBox(
             self.f_form_dil, 
-            values=["Patrimonial e Urbanismo", "Desapropriação", "Geral"], 
+            values=["Patrimonial e Urbanismo", "Desapropriação"], 
             width=195,
             state="readonly"
         )
-        self.cmb_categoria.set("Geral")
+        self.cmb_categoria.set("Patrimonial e Urbanismo")
         self.cmb_categoria.pack(pady=8)
 
         self.e_envio_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Data Envio (DD/MM/AAAA)", width=195)
@@ -338,6 +342,12 @@ class AbaDiligencias:
         # essa ordenação, voltando a lista para a ordem padrão por ID.
         # Renomeado de "Filtro" para "Ordenação" para não ser confundido com o
         # botão "Limpar Busca/Ano" abaixo, que limpa a busca/ano em vez disso.
+        ctk.CTkButton(
+            f_pesq, text="☰", width=36,
+            fg_color="#454545", hover_color="#2b2b2b",
+            command=lambda: menu_cols_dil.tk_popup(self.master.winfo_pointerx(), self.master.winfo_pointery())
+        ).pack(side="right", padx=(10, 0))
+
         self.btn_filtro_ativo = ctk.CTkButton(
             f_pesq, text="🔽", width=50,
             fg_color="#454545", hover_color="#2b2b2b",
@@ -370,6 +380,14 @@ class AbaDiligencias:
 
         headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "CATEGORIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO", "STATUS", "ENVIADO POR")
         self._col_headers = dict(zip(cols, headers))
+
+        col_vars_dil = {c: BooleanVar(value=True) for c in cols}
+        menu_cols_dil = Menu(self.master, tearoff=0)
+        for c, h in zip(cols, headers):
+            menu_cols_dil.add_checkbutton(
+                label=h, variable=col_vars_dil[c],
+                command=lambda: self.tab_dil_tree.configure(displaycolumns=[c for c in cols if col_vars_dil[c].get()] or cols)
+            )
 
         # Associação de evento de ordenação ao clicar no título de cada coluna
         for c, h in zip(cols, headers):
@@ -431,7 +449,7 @@ class AbaDiligencias:
             campo.bind("<Return>", self._acionar_atalho_enter)
             campo.bind("<Escape>", lambda e: self.dil_limpar_campos())
 
-        self.dil_listar()
+        self.master.after(100, self.dil_listar)
 
     def _acionar_atalho_enter(self, event=None):
         """
@@ -491,7 +509,7 @@ class AbaDiligencias:
         self.id_diligencia_sel = None
         for e in (self.e_saj_dil, self.e_sei_dil, self.e_num_dil, self.e_sec_dil, self.e_caminho_dil, self.e_idsei_dil, self.e_envio_dil, self.e_prazo_dil):
             e.delete(0, 'end')
-        self.cmb_categoria.set("Geral")
+        self.cmb_categoria.set("Patrimonial e Urbanismo")
         self.btn_salvar_dil.configure(state="normal")
 
     def dil_cadastrar(self):
@@ -579,9 +597,12 @@ class AbaDiligencias:
                     cur.execute(query, tuple(params))
                     linhas = cur.fetchall()
 
-                    self.app.after(0, lambda: self._preencher_tabela(linhas))
+                    if self.app.winfo_exists():
+                        self.app.after(0, lambda: self._preencher_tabela(linhas))
                 except mysql.connector.Error as err:
                     logging.error(f"Erro na busca: {err}")
+                except RuntimeError:
+                    pass  # janela foi destruída/trocada durante a consulta
                 finally:
                     cur.close()
                     con.close()
@@ -605,7 +626,7 @@ class AbaDiligencias:
             else:
                 tags_item = ()
 
-            cat_str = row.get('categoria') or "Geral"
+            cat_str = row.get('categoria') or "Patrimonial e Urbanismo"
             sec_str = row.get('secretaria') or "-"
             cam_str = row.get('caminho') or "-"
             id_sei_str = row.get('Id SEI') or "-"
@@ -653,7 +674,7 @@ class AbaDiligencias:
         self.e_num_dil.delete(0, 'end')
         self.e_num_dil.insert(0, v[3] if v[3] != "-" else "")
 
-        self.cmb_categoria.set(v[4] if (v[4] and v[4] != "-") else "Geral")
+        self.cmb_categoria.set(v[4] if (v[4] and v[4] != "-") else "Patrimonial e Urbanismo")
 
         self.e_sec_dil.delete(0, 'end')
         self.e_sec_dil.insert(0, v[5] if v[5] != "-" else "")
@@ -790,16 +811,36 @@ class AbaDiligencias:
         janela.title("Diligências Concluídas")
         janela.geometry("1100x720")
         janela.transient(self.master)
+        janela.resizable(True, True)
 
         ctk.CTkLabel(janela, text="Histórico de Concluídas (Diligência)", font=("Arial", 16, "bold")).pack(pady=10)
-        
+
+        f_busca_conc = ctk.CTkFrame(janela, fg_color="transparent")
+        f_busca_conc.pack(fill="x", padx=10, pady=(0, 5))
+        ctk.CTkLabel(f_busca_conc, text="Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
+        e_busca_conc = ctk.CTkEntry(f_busca_conc, placeholder_text="SAJ, SEI, Secretaria, Categoria, Caminho...", width=320)
+        e_busca_conc.pack(side="left", fill="x", expand=True, padx=5)
+
         cols = ("id", "saj", "sei", "sec", "categoria", "caminho", "id_sei", "envio", "prazo", "enviado_por", "concluido_por", "conclusao")
         headers = ("ID", "SAJ", "SEI", "Secretaria", "Categoria", "Caminho", "ID SEI", "Envio", "Prazo", "Enviado por", "Concluído por", "Data Conclusão")
         
         tb_conc = ttk.Treeview(janela, columns=cols, show="headings")
 
         for col, t in zip(cols, headers):
-            tb_conc.heading(col, text=t)
+            tb_conc.heading(col, text=t, command=lambda c=col: self._ordenar_coluna(c, False, tb_conc))
+
+        col_vars = {c: BooleanVar(value=True) for c in cols}
+
+        def _att_cols_visiveis():
+            tb_conc["displaycolumns"] = [c for c in cols if col_vars[c].get()] or cols
+
+        menu_cols = Menu(janela, tearoff=0)
+        for c, t in zip(cols, headers):
+            menu_cols.add_checkbutton(label=t, variable=col_vars[c], command=_att_cols_visiveis)
+        ctk.CTkButton(
+            f_busca_conc, text="☰ Colunas", width=90,
+            command=lambda: menu_cols.tk_popup(janela.winfo_pointerx(), janela.winfo_pointery())
+        ).pack(side="left", padx=5)
 
         tb_conc.column("id", width=40, anchor="center")
         tb_conc.column("saj", width=120)
@@ -817,6 +858,7 @@ class AbaDiligencias:
         tb_conc.pack(fill="both", expand=True, padx=10, pady=5)
 
         con = obter_conexao()
+        todas_linhas_conc = []
         if con:
             try:
                 cur = con.cursor(dictionary=True)
@@ -825,8 +867,8 @@ class AbaDiligencias:
                     env = row['data_envio'].strftime('%d/%m/%Y') if hasattr(row['data_envio'], 'strftime') else ""
                     pz = row['prazo'].strftime('%d/%m/%Y') if hasattr(row['prazo'], 'strftime') else ""
                     conc = row['data_conclusao'].strftime('%d/%m/%Y %H:%M') if hasattr(row['data_conclusao'], 'strftime') else ""
-                    tb_conc.insert("", "end", values=(
-                        row['id'], row['saj'], row['sei'], row['secretaria'], row.get('categoria', ''), row.get('caminho', '-'), row.get('Id SEI') or "-", env, pz, 
+                    todas_linhas_conc.append((
+                        row['id'], row['saj'], row['sei'], row['secretaria'], row.get('categoria', ''), row.get('caminho', '-'), row.get('Id SEI') or "-", env, pz,
                         row['usuario_criacao'] or "N/A", row['usuario_conclusao'] or "N/A", conc
                     ))
             except mysql.connector.Error as err:
@@ -834,6 +876,17 @@ class AbaDiligencias:
             finally: 
                 cur.close()
                 con.close()
+
+        def _repopular_conc(filtro=""):
+            tb_conc.delete(*tb_conc.get_children())
+            filtro = filtro.strip().lower()
+            for valores in todas_linhas_conc:
+                if not filtro or any(filtro in str(v).lower() for v in valores):
+                    tb_conc.insert("", "end", values=valores)
+
+        e_busca_conc.bind("<KeyRelease>", lambda e: _repopular_conc(e_busca_conc.get()))
+        _repopular_conc()
+
 
         if hasattr(self.app, 'ajustar_colunas_treeview'):
             self.app.ajustar_colunas_treeview(tb_conc)

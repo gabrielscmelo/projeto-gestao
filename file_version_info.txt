@@ -18,7 +18,7 @@ VSVersionInfo(
            StringStruct(u'FileDescription', u'Sistema de Gestão de Diligências'),
            StringStruct(u'FileVersion', u'0.0.3'),
            StringStruct(u'InternalName', u'SistemaDeGestao'),
-           StringStruct(u'LegalCopyright', u'© 2026 Gabriel Costa. Todos os direitos reservados.'),
+           StringStruct(u'LegalCopyright', u'© 2026 Gabriel Melo. Todos os direitos reservados.'),
            StringStruct(u'OriginalFilename', u'SistemaDeGestao.exe'),
            StringStruct(u'ProductName', u'Sistema de Gestão'),
            StringStruct(u'ProductVersion', u'0.0.3')])

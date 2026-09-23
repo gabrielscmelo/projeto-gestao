@@ -666,9 +666,16 @@ def atualizar_banco_pos_cobranca(id_diligencia, usuario_app, dias_prorrogacao=5,
         con.close()
 
 
-def iniciar_automacao_completa(usuario_sei, senha_sei, usuario_app="Robô", dias_prorrogacao=5, callback_log=None):
-    """Orquestrador da automação aceitando os dias de prorrogação dinâmicos."""
+def iniciar_automacao_completa(usuario_sei, senha_sei, usuario_app="Robô", dias_prorrogacao=5, callback_log=None, diligencias_ids=None):
+    """Orquestrador da automação aceitando os dias de prorrogação dinâmicos.
+
+    diligencias_ids: iterável opcional de IDs (checkbox marcado na tela) — se
+    informado, cobra somente essas diligências; senão, cobra todas as vencidas.
+    """
     diligencias = obter_diligencias_vencidas()
+    if diligencias_ids is not None:
+        ids = {int(i) for i in diligencias_ids}
+        diligencias = [d for d in diligencias if d.get("id") in ids]
 
     if not diligencias:
         registrar_log("[ROBÔ] Nenhuma diligência em atraso encontrada.", callback_log)
