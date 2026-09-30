@@ -6,6 +6,7 @@ from tkinter import messagebox
 import mysql.connector
 from database.connection import obter_conexao
 from utils.security import verificar_senha
+from utils.troca_senha import senha_expirada, exigir_troca_senha
 from utils.lotacoes import LOTACOES, normalizar_lotacoes, rotulo
 
 # Após esse número de tentativas erradas seguidas, o login fica bloqueado
@@ -178,6 +179,9 @@ class TelaLogin(ctk.CTk):
             self._tentativas_falhas = 0
             self._bloqueio_segundos = BLOQUEIO_INICIAL_SEGUNDOS
             self.lbl_status.configure(text="")
+            if senha_expirada(usuario.get('trocar_senha'), usuario.get('senha_alterada_em')):
+                if not exigir_troca_senha(self, usuario['id']):
+                    return  # cancelou a troca: não entra
             self.nome_logado = nome_completo.strip().split()[0].capitalize()
             self.usuario_logado = usuario['login']
             self.perfil_logado = usuario['perfil']

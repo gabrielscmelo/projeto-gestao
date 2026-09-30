@@ -4,7 +4,7 @@
  False,
  True,
  ['C:\\Users\\gabriel.costa\\Documents\\Projeto Gestão\\assets/icon.ico'],
- versioninfo.VSVersionInfo(ffi=versioninfo.FixedFileInfo(filevers=(0, 0, 0, 3), prodvers=(0, 0, 0, 3), mask=0x3f, flags=0x0, OS=0x40004, fileType=1, subtype=0x0, date=(0, 0)), kids=[versioninfo.StringFileInfo([versioninfo.StringTable('040904B0', [versioninfo.StringStruct('CompanyName', 'Gabriel Melo'), versioninfo.StringStruct('FileDescription', 'Sistema de Gestão de Diligências'), versioninfo.StringStruct('FileVersion', '0.0.3'), versioninfo.StringStruct('InternalName', 'SistemaDeGestao'), versioninfo.StringStruct('LegalCopyright', '© 2026 Gabriel Costa. Todos os direitos reservados.'), versioninfo.StringStruct('OriginalFilename', 'SistemaDeGestao.exe'), versioninfo.StringStruct('ProductName', 'Sistema de Gestão'), versioninfo.StringStruct('ProductVersion', '0.0.3')])]), versioninfo.VarFileInfo([versioninfo.VarStruct('Translation', [1033, 1200])])]),
+ versioninfo.VSVersionInfo(ffi=versioninfo.FixedFileInfo(filevers=(0, 0, 0, 3), prodvers=(0, 0, 0, 3), mask=0x3f, flags=0x0, OS=0x40004, fileType=1, subtype=0x0, date=(0, 0)), kids=[versioninfo.StringFileInfo([versioninfo.StringTable('040904B0', [versioninfo.StringStruct('CompanyName', 'Gabriel Melo'), versioninfo.StringStruct('FileDescription', 'Sistema de Gestão de Diligências'), versioninfo.StringStruct('FileVersion', '0.0.3'), versioninfo.StringStruct('InternalName', 'SistemaDeGestao'), versioninfo.StringStruct('LegalCopyright', '© 2026 Gabriel Melo. Todos os direitos reservados.'), versioninfo.StringStruct('OriginalFilename', 'SistemaDeGestao.exe'), versioninfo.StringStruct('ProductName', 'Sistema de Gestão'), versioninfo.StringStruct('ProductVersion', '0.0.3')])]), versioninfo.VarFileInfo([versioninfo.VarStruct('Translation', [1033, 1200])])]),
  False,
  False,
  b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<assembly xmlns='
@@ -81,7 +81,7 @@
  [],
  False,
  False,
- 1790177962,
+ 1790781454,
  [('runw.exe',
    'C:\\Users\\gabriel.costa\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],

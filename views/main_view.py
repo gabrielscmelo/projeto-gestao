@@ -3,7 +3,9 @@ import os
 import json
 import logging
 import threading
-from tkinter import ttk, messagebox
+import shutil
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
 import customtkinter as ctk
 
@@ -23,6 +25,11 @@ ARQUIVO_PREFERENCIAS_UI = "ui_prefs.json"
 # Intervalo (ms) entre checagens automáticas de conexão com o banco, para o
 # indicador de status na barra superior.
 INTERVALO_CHECAGEM_BD_MS = 30000
+
+# Pasta na rede com a versão atualizada do sistema (ajuste para o caminho real).
+PASTA_ORIGEM_ATUALIZACAO = r"\\N_008279\Users\gabriel.costa\Documents\Projeto Gestão\dist"
+# Nunca copiados na atualização (são locais de cada máquina).
+ATUALIZACAO_IGNORAR = {"secret.key", "config.ini.enc", "ui_prefs.json", "app.log", "__pycache__"}
 
 class Aplicativo(ctk.CTk):
     def __init__(self, usuario_atual, perfil_atual, nome_atual=None,
@@ -93,6 +100,10 @@ class Aplicativo(ctk.CTk):
         # Botão "Sobre o Sistema"
         ctk.CTkButton(f_top, text="ℹ Sobre", command=self.abrir_sobre, fg_color="#555555", hover_color="#333333", height=28, width=80).pack(side="right", padx=10)
 
+        # Ícone de notificações (abre pop-up); mostra a contagem quando há avisos
+        self.btn_notif = ctk.CTkButton(f_top, text="🔔", command=self.abrir_notificacoes, fg_color="#555555", hover_color="#333333", height=28, width=60)
+        self.btn_notif.pack(side="right", padx=(10, 0))
+
         # Rodapé de Direitos Autorais
         f_footer = ctk.CTkFrame(self, height=20, fg_color="transparent")
         f_footer.pack(side="bottom", fill="x", padx=10, pady=(2, 5))
@@ -108,6 +119,7 @@ class Aplicativo(ctk.CTk):
         # Tabview
         self.f_tabs = ctk.CTkFrame(self, fg_color="transparent")
         self.f_tabs.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        self._notificacoes = {}   # origem -> lista de mensagens
         self._criar_abas()
 
         # Inicia o monitoramento periódico da conexão com o banco (atualiza
@@ -118,6 +130,91 @@ class Aplicativo(ctk.CTk):
             self.iconbitmap("assets/icon.ico")
         except Exception:
             pass
+
+    def atualizar_sistema(self):
+        """Copia os arquivos da pasta raiz (rede) para a pasta do programa, sem sobrescrever
+        secret.key, config.ini.enc e demais arquivos locais."""
+        origem = PASTA_ORIGEM_ATUALIZACAO
+        if not os.path.isdir(origem):
+            origem = filedialog.askdirectory(parent=self, title="Selecione a pasta raiz do sistema")
+            if not origem:
+                return
+        destino = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(sys.argv[0]))
+        if os.path.normcase(os.path.abspath(origem)) == os.path.normcase(destino):
+            messagebox.showwarning("Atualizar", "A origem é a própria pasta do sistema.", parent=self)
+            return
+        if not messagebox.askyesno("Atualizar sistema", "Copiar a versão da rede para esta máquina?\nO programa será fechado ao final.", parent=self):
+            return
+        st = {"msg": "Lendo arquivos da rede...", "total": 0, "done": 0, "fim": False, "erros": []}
+        jan = ctk.CTkToplevel(self)
+        jan.title("Atualizando")
+        jan.geometry("420x150")
+        jan.resizable(False, False)
+        jan.transient(self)
+        jan.protocol("WM_DELETE_WINDOW", lambda: None)  # não fecha durante a cópia
+        jan.after(100, lambda: (jan.grab_set(), jan.lift()))
+        ctk.CTkLabel(jan, text="Atualizando o sistema...", font=("Arial", 14, "bold")).pack(pady=(18, 4))
+        lbl = ctk.CTkLabel(jan, text=st["msg"], font=("Arial", 10), text_color="gray", wraplength=390)
+        lbl.pack()
+        barra = ctk.CTkProgressBar(jan, width=360)
+        barra.pack(pady=14)
+        barra.configure(mode="indeterminate")
+        barra.start()
+
+        def _copiar():  # thread: NÃO mexe em widgets, só no dicionário st
+            try:
+                lista = []
+                for raiz, pastas, arquivos in os.walk(origem):
+                    pastas[:] = [p for p in pastas if p not in ATUALIZACAO_IGNORAR]
+                    rel = os.path.relpath(raiz, origem)
+                    os.makedirs(os.path.join(destino, rel), exist_ok=True)
+                    for nome in arquivos:
+                        if nome in ATUALIZACAO_IGNORAR:
+                            continue
+                        src, dst = os.path.join(raiz, nome), os.path.normpath(os.path.join(destino, rel, nome))
+                        if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src) \
+                                and int(os.path.getmtime(dst)) >= int(os.path.getmtime(src)):
+                            continue  # já está atualizado
+                        lista.append((src, dst, nome))
+                st["total"] = len(lista)
+                for src, dst, nome in lista:
+                    st["msg"] = f"Copiando: {nome}"
+                    try:
+                        try:
+                            shutil.copy2(src, dst)
+                        except PermissionError:  # executável em uso: renomeia o atual e copia o novo
+                            os.replace(dst, dst + ".old")
+                            shutil.copy2(src, dst)
+                    except OSError as err:
+                        st["erros"].append(f"{nome}: {err}")
+                        logging.error(f"Erro ao atualizar {src}: {err}")
+                    st["done"] += 1
+            except OSError as err:
+                st["erros"].append(str(err))
+                logging.error(f"Erro ao atualizar sistema: {err}")
+            st["fim"] = True
+
+        def _acompanhar():  # main thread
+            lbl.configure(text=st["msg"])
+            if st["total"] and str(barra.cget("mode")) != "determinate":
+                barra.stop()
+                barra.configure(mode="determinate")
+            if st["total"]:
+                barra.set(st["done"] / st["total"])
+            if not st["fim"]:
+                self.after(100, _acompanhar)
+                return
+            jan.destroy()
+            erros, n = st["erros"], st["done"] - len(st["erros"])
+            if erros:
+                messagebox.showwarning("Atualizar", f"{n} arquivo(s) copiado(s), {len(erros)} com erro:\n" + "\n".join(erros[:5]), parent=self)
+                return
+            messagebox.showinfo("Atualizar", f"{n} arquivo(s) atualizado(s).\nO sistema será fechado; abra-o novamente.", parent=self)
+            self.destroy()
+            sys.exit(0)
+
+        threading.Thread(target=_copiar, daemon=True).start()
+        _acompanhar()
 
     def fechar_programa(self):
         """Método acionado ao clicar no 'X' da janela"""
@@ -135,12 +232,12 @@ class Aplicativo(ctk.CTk):
     def abrir_sobre(self):
         janela_sobre = ctk.CTkToplevel(self)
         janela_sobre.title("Sobre o Sistema")
-        janela_sobre.geometry("400x260")
+        janela_sobre.geometry("400x310")
         janela_sobre.resizable(False, False)
         janela_sobre.transient(self)
 
         ctk.CTkLabel(janela_sobre, text="Sistema de Gestão", font=("Arial", 18, "bold")).pack(pady=(20, 5))
-        ctk.CTkLabel(janela_sobre, text="Versão 0.3.0", font=("Arial", 11), text_color="gray").pack(pady=(0, 15))
+        ctk.CTkLabel(janela_sobre, text="Versão 0.4.0", font=("Arial", 11), text_color="gray").pack(pady=(0, 15))
 
         texto_licenca = (
             "Este software é protegido por leis de direitos autorais.\n"
@@ -150,6 +247,7 @@ class Aplicativo(ctk.CTk):
         )
         
         ctk.CTkLabel(janela_sobre, text=texto_licenca, font=("Arial", 11), justify="center").pack(pady=10)
+        ctk.CTkButton(janela_sobre, text="🔄 Atualizar sistema", command=lambda: (janela_sobre.destroy(), self.atualizar_sistema()), width=160).pack(pady=(5, 0))
         ctk.CTkButton(janela_sobre, text="Fechar", command=janela_sobre.destroy, width=100).pack(pady=10)
 
     def abrir_gerencial_usuarios(self):
@@ -157,6 +255,11 @@ class Aplicativo(ctk.CTk):
 
     def _criar_abas(self):
         """(Re)monta o tabview só com as abas liberadas para a lotação atual."""
+        self._notificacoes.clear()
+        if getattr(self, "_frame_oculto", None):
+            self._frame_oculto.destroy()
+            self._frame_oculto = None
+        self._redesenhar_notificacoes()
         self.tabview = ctk.CTkTabview(
             self.f_tabs,
             text_color=("black", "white"),
@@ -182,8 +285,58 @@ class Aplicativo(ctk.CTk):
         if "gestao_pessoas" in self.abas_liberadas:
             self.tab_gestao_pessoas = self.tabview.add("Gestão de Pessoas")
             self.aba_gestao_pessoas = AbaGestaoPessoas(self.tab_gestao_pessoas, self)
+        else:
+            # Sem a aba liberada: carrega em um frame oculto só para alimentar
+            # a barra de notificações.
+            self._frame_oculto = ctk.CTkFrame(self.f_tabs)
+            self.aba_gestao_pessoas = AbaGestaoPessoas(self._frame_oculto, self)
 
         self.configurar_estilo_treeview(self.tema_atual)
+
+    # ------------------------------------------------------------------
+    # BARRA DE NOTIFICAÇÕES (qualquer aba chama definir_notificacoes)
+    # ------------------------------------------------------------------
+    def definir_notificacoes(self, origem, mensagens):
+        """Substitui as notificações de uma origem (ex.: 'gestao_pessoas')."""
+        if mensagens:
+            self._notificacoes[origem] = list(mensagens)
+        else:
+            self._notificacoes.pop(origem, None)
+        self._redesenhar_notificacoes()
+
+    def _redesenhar_notificacoes(self):
+        n = sum(len(l) for l in self._notificacoes.values())
+        self.btn_notif.configure(text=f"🔔 {n}" if n else "🔔",
+                                 fg_color="#a86b00" if n else "#555555",
+                                 hover_color="#8a5800" if n else "#333333")
+        j = getattr(self, "_janela_notif", None)
+        if j and j.winfo_exists():
+            self._preencher_notificacoes()
+
+    def abrir_notificacoes(self):
+        j = getattr(self, "_janela_notif", None)
+        if j and j.winfo_exists():
+            j.focus()
+            return
+        j = self._janela_notif = ctk.CTkToplevel(self)
+        j.title("Notificações")
+        j.geometry("520x320")
+        j.transient(self)
+        ctk.CTkButton(j, text="Fechar", command=j.destroy, width=100).pack(side="bottom", pady=8)
+        self._lista_notif = ctk.CTkScrollableFrame(j)
+        self._lista_notif.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self._preencher_notificacoes()
+
+    def _preencher_notificacoes(self):
+        for w in self._lista_notif.winfo_children():
+            w.destroy()
+        msgs = [m for l in self._notificacoes.values() for m in l]
+        if not msgs:
+            ctk.CTkLabel(self._lista_notif, text="Nenhuma notificação.", text_color="gray").pack(pady=20)
+        for m in msgs:
+            ctk.CTkLabel(self._lista_notif, text=f"⚠ {m}", fg_color="#a86b00", corner_radius=6, text_color="white",
+                         font=("Arial", 11, "bold"), anchor="w", justify="left", wraplength=460
+                         ).pack(fill="x", pady=2, padx=2)
 
     def abrir_alterar_lotacao(self):
         """Janela com checkboxes para escolher quais lotações ficam visíveis."""
@@ -252,7 +405,10 @@ class Aplicativo(ctk.CTk):
                 conectado = True
         except Exception as err:
             logging.error(f"Erro ao checar conexão com o banco: {err}")
-        self.after(0, lambda: self._atualizar_status_bd(conectado))
+        try:
+            self.after(0, lambda: self._atualizar_status_bd(conectado))
+        except (RuntimeError, tk.TclError):
+            pass  # janela fechada / mainloop encerrado
 
     def _atualizar_status_bd(self, conectado):
         if not self.lbl_status_bd.winfo_exists():

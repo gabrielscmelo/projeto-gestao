@@ -3,6 +3,7 @@ import mysql.connector
 import customtkinter as ctk
 from database.connection import obter_conexao
 from utils.security import gerar_hash_senha
+from utils.troca_senha import gerar_senha_aleatoria
 from utils.lotacoes import LOTACOES, LOTACOES_CHAVES, normalizar_lotacoes, formatar_lista
 
 class JanelaUsuarios(ctk.CTkToplevel):
@@ -27,7 +28,7 @@ class JanelaUsuarios(ctk.CTkToplevel):
         self.e_login.pack(pady=5)
 
         # Campo Senha
-        self.e_senha = ctk.CTkEntry(f_form, placeholder_text="Senha (Preencha para alterar)", show="*", width=220)
+        self.e_senha = ctk.CTkEntry(f_form, placeholder_text="Nova senha (só para redefinir)", show="*", width=220)
         self.e_senha.pack(pady=5)
         
         # Campo Perfil
@@ -140,7 +141,7 @@ class JanelaUsuarios(ctk.CTkToplevel):
 
     def salvar(self):
         nom, log, sen, perf = self.e_nome.get().strip(), self.e_login.get().strip(), self.e_senha.get().strip(), self.cmb_perfil.get()
-        if not nom or not log or not sen: 
+        if not nom or not log:
             messagebox.showwarning("Aviso", "Preencha todos os campos obrigatórios.", parent=self)
             return
 
@@ -153,12 +154,14 @@ class JanelaUsuarios(ctk.CTkToplevel):
         if con:
             try:
                 cur = con.cursor()
-                senha_hash = gerar_hash_senha(sen)
+                sen = gerar_senha_aleatoria()
                 cur.execute(
-                    "INSERT INTO tb_usuarios (nome, login, senha, perfil, lotacoes) VALUES (%s, %s, %s, %s, %s)",
-                    (nom, log, senha_hash, perf, lotacoes_str)
+                    "INSERT INTO tb_usuarios (nome, login, senha, perfil, lotacoes, trocar_senha, senha_alterada_em) "
+                    "VALUES (%s, %s, %s, %s, %s, 1, NOW())",
+                    (nom, log, gerar_hash_senha(sen), perf, lotacoes_str)
                 )
                 con.commit()
+                messagebox.showinfo("Senha temporária", f"Usuário criado.\n\nSenha temporária: {sen}\n\nRepasse ao usuário; ela não será exibida novamente.", parent=self)
                 self.limpar(); self.listar()
             except mysql.connector.Error as err:
                 messagebox.showerror("Erro", str(err), parent=self)
@@ -183,7 +186,7 @@ class JanelaUsuarios(ctk.CTkToplevel):
                 if sen:
                     senha_hash = gerar_hash_senha(sen)
                     cur.execute(
-                        "UPDATE tb_usuarios SET nome=%s, login=%s, senha=%s, perfil=%s, lotacoes=%s WHERE id=%s",
+                        "UPDATE tb_usuarios SET nome=%s, login=%s, senha=%s, perfil=%s, lotacoes=%s, trocar_senha=1, senha_alterada_em=NOW() WHERE id=%s",
                         (nom, log, senha_hash, perf, lotacoes_str, self.id_sel)
                     )
                 else:

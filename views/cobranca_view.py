@@ -8,6 +8,7 @@ import customtkinter as ctk
 
 from database.connection import obter_conexao
 from utils.debouncer import Debouncer
+from utils.perfis_colunas import adicionar_perfis
 from utils.pdf_exporter import exportar_treeview_pdf
 from utils.formatters import aplicar_mascara_data_auto, calcular_status_diligencia, formatar_e_validar_data
 from services.robo_cobranca import iniciar_automacao_completa
@@ -268,10 +269,13 @@ class AbaCobranca:
         # banco está em andamento.
         self.lbl_carregando_cob = ctk.CTkLabel(f_pesq, text="⏳ Carregando...", text_color="gray")
 
-        cols = ("sel", "id", "saj", "sei", "diligencia", "secretaria", "caminho", "id_sei", "envio", "prazo", "dias_atraso")
+        cols = ("sel", "id", "saj", "sei", "diligencia", "secretaria", "caminho", "id_sei", "envio", "prazo", "dias_atraso", "procurador")
         self.tab_cob_tree = ttk.Treeview(self.f_lista_cob, columns=cols, show="headings", selectmode="browse")
+        cols_exib = [c for c in cols if c not in ("sel", "procurador")]
+        cols_exib.insert(cols_exib.index("diligencia") + 1, "procurador")
+        self.tab_cob_tree.configure(displaycolumns=["sel"] + cols_exib)
 
-        headers = ("✔", "ID", "SAJ", "SEI", "DILIGÊNCIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO VENCIDO", "ATRASO")
+        headers = ("✔", "ID", "SAJ", "SEI", "DILIGÊNCIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO VENCIDO", "ATRASO", "PROCURADOR")
         self._col_headers = dict(zip(cols, headers))
         for c, h in zip(cols, headers):
             self.tab_cob_tree.heading(c, text=h, command=lambda _col=c: self._ordenar_coluna(_col, False))
@@ -283,8 +287,9 @@ class AbaCobranca:
                 continue
             menu_cols_cob.add_checkbutton(
                 label=h, variable=col_vars_cob[c],
-                command=lambda: self.tab_cob_tree.configure(displaycolumns=["sel"] + [c for c in cols if c != "sel" and col_vars_cob[c].get()])
+                command=lambda: self.tab_cob_tree.configure(displaycolumns=["sel"] + [c for c in cols_exib if col_vars_cob[c].get()])
             )
+        adicionar_perfis(menu_cols_cob, self.master, "cobranca", col_vars_cob, lambda: self.tab_cob_tree.configure(displaycolumns=["sel"] + [c for c in cols_exib if col_vars_cob[c].get()]), self.tab_cob_tree)
         ctk.CTkButton(
             f_pesq, text="☰", width=36,
             fg_color="#454545", hover_color="#2b2b2b",
@@ -302,6 +307,7 @@ class AbaCobranca:
         self.tab_cob_tree.column("envio", width=80, anchor="center")
         self.tab_cob_tree.column("prazo", width=80, anchor="center")
         self.tab_cob_tree.column("dias_atraso", width=80, anchor="center")
+        self.tab_cob_tree.column("procurador", width=120)
 
         self.tab_cob_tree.tag_configure("atrasado", foreground="#ff4d4d")
 
@@ -483,7 +489,7 @@ class AbaCobranca:
             if con:
                 try:
                     cur = con.cursor(dictionary=True)
-                    query = "SELECT id, saj, sei, diligencia, categoria, secretaria, caminho, `Id SEI` AS id_sei, data_envio, prazo FROM tb_gestao WHERE prazo < CURDATE()"
+                    query = "SELECT id, saj, sei, diligencia, categoria, secretaria, caminho, `Id SEI` AS id_sei, data_envio, prazo, procurador FROM tb_gestao WHERE prazo < CURDATE()"
                     params = []
 
                     if busca:
@@ -542,7 +548,8 @@ class AbaCobranca:
                 id_sei_valor,
                 env_str, 
                 ex_pz, 
-                f"{abs(dias)}d atrás"
+                f"{abs(dias)}d atrás",
+                row.get('procurador') or "-"
             ), tags=("atrasado",))
         self.lbl_total_cob.configure(text=f"Diligências Espelhadas (Em Atraso): {len(atrasadas)}")
 

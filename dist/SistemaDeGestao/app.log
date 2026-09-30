@@ -1,3 +1,1 @@
-2026-09-23 12:56:33,777 - ERROR - Erro no Pool de Conexão: 1130 (HY000): Host 'N_008279.demprel.local' is not allowed to connect to this MySQL server
-2026-09-23 12:57:28,426 - ERROR - Erro no Pool de Conexão: 1130 (HY000): Host 'd_014308.demprel.local' is not allowed to connect to this MySQL server
-2026-09-23 13:43:23,668 - ERROR - Erro no Pool de Conexão: 1044 (42000): Access denied for user 'root'@'%' to database 'db_gestao'
+2026-09-30 12:20:14,355 - ERROR - Erro no Pool de Conexão: 2003 (HY000): Can't connect to MySQL server on 'localhost:3306' (10061)

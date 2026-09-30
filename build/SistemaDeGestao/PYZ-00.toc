@@ -2135,8 +2135,15 @@
    'C:\\Users\\gabriel.costa\\Documents\\Projeto '
    'Gestão\\utils\\pdf_exporter.py',
    'PYMODULE'),
+  ('utils.perfis_colunas',
+   'C:\\Users\\gabriel.costa\\Documents\\Projeto '
+   'Gestão\\utils\\perfis_colunas.py',
+   'PYMODULE'),
   ('utils.security',
    'C:\\Users\\gabriel.costa\\Documents\\Projeto Gestão\\utils\\security.py',
+   'PYMODULE'),
+  ('utils.troca_senha',
+   'C:\\Users\\gabriel.costa\\Documents\\Projeto Gestão\\utils\\troca_senha.py',
    'PYMODULE'),
   ('uuid',
    'C:\\Users\\gabriel.costa\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\uuid.py',

@@ -9,11 +9,15 @@ import mysql.connector
 
 from database.connection import obter_conexao
 from utils.debouncer import Debouncer
+from utils.perfis_colunas import adicionar_perfis
 from utils.pdf_exporter import exportar_treeview_pdf
 from utils.formatters import (
     aplicar_mascara_data_auto, calcular_status_diligencia,
     formatar_e_validar_data, formatar_saj, formatar_sei, formatar_diligencia
 )
+
+
+SEM_PROC = "(Sem procurador)"
 
 
 class AbaDiligencias:
@@ -234,33 +238,33 @@ class AbaDiligencias:
         # Tem altura fixa (pack_propagate(False)) para que o espaço já exista
         # mesmo com o aviso escondido — assim, quando ele aparece, ocupa essa
         # faixa própria em vez de flutuar por cima do título abaixo.
-        self.f_toast_dil = ctk.CTkFrame(self.f_form_dil, fg_color="transparent", height=32)
-        self.f_toast_dil.pack(fill="x", padx=10, pady=(8, 0))
+        self.f_toast_dil = ctk.CTkFrame(self.f_form_dil, fg_color="transparent", height=24)
+        self.f_toast_dil.pack(fill="x", padx=10, pady=(4, 0))
         self.f_toast_dil.pack_propagate(False)
 
         ctk.CTkLabel(self.f_form_dil, text="Lotação Diligência", font=("Arial", 18, "bold")).pack(pady=5)
 
         self.e_saj_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SAJ (ex: 2025.01.24)", width=195)
-        self.e_saj_dil.pack(pady=8)
+        self.e_saj_dil.pack(pady=3)
         self.e_saj_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_saj_dil, formatar_saj))
 
         self.e_sei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="SEI (ex: 05.123/2024-01)", width=195)
-        self.e_sei_dil.pack(pady=8)
+        self.e_sei_dil.pack(pady=3)
         self.e_sei_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_sei_dil, formatar_sei))
 
         cmd_valida_dil = (self.master.register(self._validar_input_diligencia), '%P')
         self.e_num_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Diligência (ex: 24 ou S/Nº)", width=195)
-        self.e_num_dil.pack(pady=8)
+        self.e_num_dil.pack(pady=3)
         self.e_num_dil.bind("<FocusOut>", lambda e: self.aplicar_mascara_campo(self.e_num_dil, formatar_diligencia))
 
         self.e_sec_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Secretaria", width=195)
-        self.e_sec_dil.pack(pady=8)
+        self.e_sec_dil.pack(pady=3)
 
         self.e_caminho_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Caminho / Pasta", width=195)
-        self.e_caminho_dil.pack(pady=8)
+        self.e_caminho_dil.pack(pady=3)
 
         self.e_idsei_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Id SEI (documento da diligência)", width=195)
-        self.e_idsei_dil.pack(pady=8)
+        self.e_idsei_dil.pack(pady=3)
 
         # COMBOBOX DA CATEGORIA
         self.cmb_categoria = ctk.CTkComboBox(
@@ -270,18 +274,23 @@ class AbaDiligencias:
             state="readonly"
         )
         self.cmb_categoria.set("Patrimonial e Urbanismo")
-        self.cmb_categoria.pack(pady=8)
+        self.cmb_categoria.pack(pady=3)
+
+        self.cmb_procurador = ctk.CTkComboBox(self.f_form_dil, values=[SEM_PROC], width=195, state="readonly")
+        self.cmb_procurador.set(SEM_PROC)
+        self.cmb_procurador.pack(pady=3)
+        self._carregar_procuradores()
 
         self.e_envio_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Data Envio (DD/MM/AAAA)", width=195)
-        self.e_envio_dil.pack(pady=8)
+        self.e_envio_dil.pack(pady=3)
         self.e_envio_dil.bind("<KeyRelease>", aplicar_mascara_data_auto)
 
         self.e_prazo_dil = ctk.CTkEntry(self.f_form_dil, placeholder_text="Prazo (DD/MM/AAAA)", width=195)
-        self.e_prazo_dil.pack(pady=8)
+        self.e_prazo_dil.pack(pady=3)
         self.e_prazo_dil.bind("<KeyRelease>", aplicar_mascara_data_auto)
 
         self.btn_salvar_dil = ctk.CTkButton(self.f_form_dil, text="Salvar Novo", command=self.dil_cadastrar, fg_color="green", hover_color="darkgreen", width=195)
-        self.btn_salvar_dil.pack(pady=10)
+        self.btn_salvar_dil.pack(pady=(8, 4))
 
         f_btns_dil = ctk.CTkFrame(self.f_form_dil, fg_color="transparent")
         f_btns_dil.pack(pady=5)
@@ -309,6 +318,8 @@ class AbaDiligencias:
             "SEI": "sei",
             "DILIGÊNCIA": "diligencia",
             "SECRETARIA": "secretaria",
+            "PROCURADOR": "procurador",
+            
         }
         self.cmb_campo_pesq_dil = ctk.CTkComboBox(
             f_pesq,
@@ -367,7 +378,7 @@ class AbaDiligencias:
         self.lbl_carregando_dil.pack(side="left", padx=(5, 0))
 
         # COLUNAS DO TREEVIEW
-        cols = ("id", "saj", "sei", "diligencia", "categoria", "secretaria", "caminho", "id_sei", "envio", "prazo", "status", "enviado_por")
+        cols = ("id", "saj", "sei", "diligencia", "categoria", "secretaria", "caminho", "id_sei", "envio", "prazo", "status", "enviado_por", "procurador")
 
         # Container que agrupa a tabela e a barra de rolagem vertical. Precisa
         # ser criado ANTES do Treeview e ser o pai real dele (não apenas o
@@ -377,8 +388,12 @@ class AbaDiligencias:
         f_tree_dil.pack(pady=10, padx=10, fill="both", expand=True)
 
         self.tab_dil_tree = ttk.Treeview(f_tree_dil, columns=cols, show="headings", selectmode="browse")
+        # Ordem de exibição: PROCURADOR logo após DILIGÊNCIA (os índices dos dados não mudam)
+        cols_exib = [c for c in cols if c != "procurador"]
+        cols_exib.insert(cols_exib.index("diligencia") + 1, "procurador")
+        self.tab_dil_tree.configure(displaycolumns=cols_exib)
 
-        headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "CATEGORIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO", "STATUS", "ENVIADO POR")
+        headers = ("ID", "SAJ", "SEI", "DILIGÊNCIA", "CATEGORIA", "SECRETARIA", "CAMINHO", "ID SEI", "ENVIO", "PRAZO", "STATUS", "ENVIADO POR", "PROCURADOR")
         self._col_headers = dict(zip(cols, headers))
 
         col_vars_dil = {c: BooleanVar(value=True) for c in cols}
@@ -386,8 +401,9 @@ class AbaDiligencias:
         for c, h in zip(cols, headers):
             menu_cols_dil.add_checkbutton(
                 label=h, variable=col_vars_dil[c],
-                command=lambda: self.tab_dil_tree.configure(displaycolumns=[c for c in cols if col_vars_dil[c].get()] or cols)
+                command=lambda: self.tab_dil_tree.configure(displaycolumns=[c for c in cols_exib if col_vars_dil[c].get()] or cols_exib)
             )
+        adicionar_perfis(menu_cols_dil, self.master, "diligencias", col_vars_dil, lambda: self.tab_dil_tree.configure(displaycolumns=[c for c in cols_exib if col_vars_dil[c].get()] or cols_exib), self.tab_dil_tree)
 
         # Associação de evento de ordenação ao clicar no título de cada coluna
         for c, h in zip(cols, headers):
@@ -409,6 +425,7 @@ class AbaDiligencias:
         self.tab_dil_tree.column("prazo", width=75, anchor="center")
         self.tab_dil_tree.column("status", width=100)
         self.tab_dil_tree.column("enviado_por", width=90)
+        self.tab_dil_tree.column("procurador", width=120)
 
         self.tab_dil_tree.tag_configure("vencido", foreground="#ff4d4d")
         # Diligências com 0 a 3 dias restantes até o prazo: destaque intermediário
@@ -505,11 +522,30 @@ class AbaDiligencias:
             widget.delete(0, 'end')
             widget.insert(0, funcao_mascara(val))
 
+    def _carregar_procuradores(self):
+        """Preenche o combo com os procuradores ativos cadastrados em Gestão de Pessoas."""
+        con = obter_conexao()
+        if not con:
+            return
+        try:
+            cur = con.cursor()
+            cur.execute("SELECT nome FROM tb_colaboradores WHERE ativo=1 AND tipo='procurador' ORDER BY nome")
+            self.cmb_procurador.configure(values=[SEM_PROC] + [r[0] for r in cur.fetchall()])
+        except mysql.connector.Error as err:
+            logging.error(f"Erro ao carregar procuradores: {err}")
+        finally:
+            con.close()
+
+    def _proc_sel(self):
+        p = self.cmb_procurador.get()
+        return None if p == SEM_PROC else p
+
     def dil_limpar_campos(self):
         self.id_diligencia_sel = None
         for e in (self.e_saj_dil, self.e_sei_dil, self.e_num_dil, self.e_sec_dil, self.e_caminho_dil, self.e_idsei_dil, self.e_envio_dil, self.e_prazo_dil):
             e.delete(0, 'end')
         self.cmb_categoria.set("Patrimonial e Urbanismo")
+        self.cmb_procurador.set(SEM_PROC)
         self.btn_salvar_dil.configure(state="normal")
 
     def dil_cadastrar(self):
@@ -547,8 +583,8 @@ class AbaDiligencias:
         if con:
             try:
                 cur = con.cursor()
-                sql = "INSERT INTO tb_gestao (saj, sei, diligencia, categoria, secretaria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
-                cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, getattr(self.app, 'usuario_atual', 'N/A')))
+                sql = "INSERT INTO tb_gestao (saj, sei, diligencia, categoria, secretaria, caminho, `Id SEI`, data_envio, prazo, procurador, usuario_criacao, data_criacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())"
+                cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, self._proc_sel(), getattr(self.app, 'usuario_atual', 'N/A')))
                 con.commit()
                 self._mostrar_toast("✔ Diligência cadastrada!")
                 self.dil_limpar_campos()
@@ -590,9 +626,9 @@ class AbaDiligencias:
                             params.append(f"%{busca}%")
                         else:
                             # "Todos os Campos": mantém a busca ampla de antes.
-                            query += " AND (saj LIKE %s OR sei LIKE %s OR diligencia LIKE %s OR secretaria LIKE %s OR categoria LIKE %s OR caminho LIKE %s)"
+                            query += " AND (saj LIKE %s OR sei LIKE %s OR diligencia LIKE %s OR secretaria LIKE %s OR categoria LIKE %s OR caminho LIKE %s OR procurador LIKE %s)"
                             lk = f"%{busca}%"
-                            params.extend([lk, lk, lk, lk, lk, lk])
+                            params.extend([lk] * 7)
 
                     cur.execute(query, tuple(params))
                     linhas = cur.fetchall()
@@ -643,7 +679,8 @@ class AbaDiligencias:
                 env_str, 
                 ex_pz, 
                 f"{st} ({dias}d)", 
-                row.get('usuario_criacao') or "N/A"
+                row.get('usuario_criacao') or "N/A",
+                row.get('procurador') or "-"
             ), tags=tags_item)
 
         # Reaplica a ordenação de coluna que o usuário havia escolhido (ex.:
@@ -690,6 +727,7 @@ class AbaDiligencias:
 
         self.e_prazo_dil.delete(0, 'end')
         self.e_prazo_dil.insert(0, v[9] if v[9] != "-" else "")
+        self.cmb_procurador.set(v[12] if len(v) > 12 and v[12] != "-" else SEM_PROC)
 
     def dil_atualizar(self):
         if not self.id_diligencia_sel: 
@@ -730,8 +768,8 @@ class AbaDiligencias:
         if con:
             try:
                 cur = con.cursor()
-                sql = "UPDATE tb_gestao SET saj=%s, sei=%s, diligencia=%s, categoria=%s, secretaria=%s, caminho=%s, `Id SEI`=%s, data_envio=%s, prazo=%s WHERE id=%s"
-                cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, self.id_diligencia_sel))
+                sql = "UPDATE tb_gestao SET saj=%s, sei=%s, diligencia=%s, categoria=%s, secretaria=%s, caminho=%s, `Id SEI`=%s, data_envio=%s, prazo=%s, procurador=%s WHERE id=%s"
+                cur.execute(sql, (saj, sei, dil, categoria, sec, caminho, id_sei, envio_fmt, prazo_fmt, self._proc_sel(), self.id_diligencia_sel))
                 con.commit()
                 self._mostrar_toast("✔ Diligência atualizada!")
                 self.dil_limpar_campos()
@@ -785,13 +823,13 @@ class AbaDiligencias:
                 reg = cur.fetchone()
                 if messagebox.askyesno("Concluir", "Marcar como CONCLUÍDA e mover para o histórico?"):
                     sql = """
-                        INSERT INTO tb_concluidas (id, saj, sei, diligencia, secretaria, categoria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao, usuario_conclusao, data_conclusao)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        INSERT INTO tb_concluidas (id, saj, sei, diligencia, secretaria, categoria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao, usuario_conclusao, procurador, data_conclusao)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     """
                     cur.execute(sql, (
                         reg['id'], reg['saj'], reg['sei'], reg['diligencia'], reg['secretaria'], reg.get('categoria', ''), reg.get('caminho', ''),
                         reg.get('Id SEI', ''),
-                        reg['data_envio'], reg['prazo'], reg['usuario_criacao'], reg['data_criacao'], getattr(self.app, 'usuario_atual', 'N/A')
+                        reg['data_envio'], reg['prazo'], reg['usuario_criacao'], reg['data_criacao'], getattr(self.app, 'usuario_atual', 'N/A'), reg.get('procurador')
                     ))
                     cur.execute("DELETE FROM tb_gestao WHERE id=%s", (item_id,))
                     con.commit()
@@ -821,8 +859,8 @@ class AbaDiligencias:
         e_busca_conc = ctk.CTkEntry(f_busca_conc, placeholder_text="SAJ, SEI, Secretaria, Categoria, Caminho...", width=320)
         e_busca_conc.pack(side="left", fill="x", expand=True, padx=5)
 
-        cols = ("id", "saj", "sei", "sec", "categoria", "caminho", "id_sei", "envio", "prazo", "enviado_por", "concluido_por", "conclusao")
-        headers = ("ID", "SAJ", "SEI", "Secretaria", "Categoria", "Caminho", "ID SEI", "Envio", "Prazo", "Enviado por", "Concluído por", "Data Conclusão")
+        cols = ("id", "saj", "sei", "sec", "categoria", "caminho", "id_sei", "envio", "prazo", "enviado_por", "concluido_por", "conclusao", "procurador")
+        headers = ("ID", "SAJ", "SEI", "Secretaria", "Categoria", "Caminho", "ID SEI", "Envio", "Prazo", "Enviado por", "Concluído por", "Data Conclusão", "Procurador")
         
         tb_conc = ttk.Treeview(janela, columns=cols, show="headings")
 
@@ -854,6 +892,7 @@ class AbaDiligencias:
         tb_conc.column("enviado_por", width=110)
         tb_conc.column("concluido_por", width=110)
         tb_conc.column("conclusao", width=130, anchor="center")
+        tb_conc.column("procurador", width=120)
 
         tb_conc.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -869,7 +908,7 @@ class AbaDiligencias:
                     conc = row['data_conclusao'].strftime('%d/%m/%Y %H:%M') if hasattr(row['data_conclusao'], 'strftime') else ""
                     todas_linhas_conc.append((
                         row['id'], row['saj'], row['sei'], row['secretaria'], row.get('categoria', ''), row.get('caminho', '-'), row.get('Id SEI') or "-", env, pz,
-                        row['usuario_criacao'] or "N/A", row['usuario_conclusao'] or "N/A", conc
+                        row['usuario_criacao'] or "N/A", row['usuario_conclusao'] or "N/A", conc, row.get('procurador') or "-"
                     ))
             except mysql.connector.Error as err:
                 logging.error(f"Erro ao consultar concluídas: {err}")
@@ -904,8 +943,8 @@ class AbaDiligencias:
                         cr.execute("SELECT * FROM tb_concluidas WHERE id=%s", (item_id,))
                         reg = cr.fetchone()
                         
-                        cr.execute("INSERT INTO tb_gestao (id, saj, sei, diligencia, secretaria, categoria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                                   (reg['id'], reg['saj'], reg['sei'], reg['diligencia'], reg['secretaria'], reg.get('categoria', ''), reg.get('caminho', ''), reg.get('Id SEI', ''), reg['data_envio'], reg['prazo'], reg['usuario_criacao'], reg['data_criacao']))
+                        cr.execute("INSERT INTO tb_gestao (id, saj, sei, diligencia, secretaria, categoria, caminho, `Id SEI`, data_envio, prazo, usuario_criacao, data_criacao, procurador) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                                   (reg['id'], reg['saj'], reg['sei'], reg['diligencia'], reg['secretaria'], reg.get('categoria', ''), reg.get('caminho', ''), reg.get('Id SEI', ''), reg['data_envio'], reg['prazo'], reg['usuario_criacao'], reg['data_criacao'], reg.get('procurador')))
                         cr.execute("DELETE FROM tb_concluidas WHERE id=%s", (item_id,))
                         c.commit()
                         janela.destroy()
