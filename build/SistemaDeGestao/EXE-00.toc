@@ -81,7 +81,7 @@
  [],
  False,
  False,
- 1790781454,
+ 1790798551,
  [('runw.exe',
    'C:\\Users\\gabriel.costa\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],

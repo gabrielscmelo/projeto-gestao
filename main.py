@@ -4,6 +4,26 @@ from views.login_view import TelaLogin
 from views.main_view import Aplicativo
 
 
+def _sem_after_pendente(cls):
+    """Cancela os 'after' pendentes ao destruir a janela (evita 'invalid command name')."""
+    orig = cls.destroy
+
+    def destroy(self):
+        try:
+            for i in self.tk.call("after", "info"):
+                try:
+                    self.tk.call("after", "cancel", i)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        orig(self)
+    cls.destroy = destroy
+
+
+_sem_after_pendente(TelaLogin)
+_sem_after_pendente(Aplicativo)
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 

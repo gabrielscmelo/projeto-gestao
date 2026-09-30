@@ -589,7 +589,7 @@ class AbaDiligencias:
                 self._mostrar_toast("✔ Diligência cadastrada!")
                 self.dil_limpar_campos()
                 self.dil_listar()
-                if hasattr(self.app, 'aba_cobranca'): 
+                if getattr(self.app, 'aba_cobranca', None): 
                     self.app.aba_cobranca.cob_listar()
             except mysql.connector.Error as err:
                 logging.error(f"Erro ao cadastrar: {err}")
@@ -774,7 +774,7 @@ class AbaDiligencias:
                 self._mostrar_toast("✔ Diligência atualizada!")
                 self.dil_limpar_campos()
                 self.dil_listar()
-                if hasattr(self.app, 'aba_cobranca'): 
+                if getattr(self.app, 'aba_cobranca', None): 
                     self.app.aba_cobranca.cob_listar()
             except mysql.connector.Error as err:
                 logging.error(f"Erro ao atualizar: {err}")
@@ -799,7 +799,7 @@ class AbaDiligencias:
                     con.commit()
                     self.dil_limpar_campos()
                     self.dil_listar()
-                    if hasattr(self.app, 'aba_cobranca'): 
+                    if getattr(self.app, 'aba_cobranca', None): 
                         self.app.aba_cobranca.cob_listar()
                 except mysql.connector.Error as err:
                     logging.error(f"Erro ao excluir: {err}")
@@ -835,7 +835,7 @@ class AbaDiligencias:
                     con.commit()
                     self.dil_limpar_campos()
                     self.dil_listar()
-                    if hasattr(self.app, 'aba_cobranca'): 
+                    if getattr(self.app, 'aba_cobranca', None): 
                         self.app.aba_cobranca.cob_listar()
             except mysql.connector.Error as err:
                 logging.error(f"Erro ao concluir: {err}")
@@ -949,7 +949,7 @@ class AbaDiligencias:
                         c.commit()
                         janela.destroy()
                         self.dil_listar()
-                        if hasattr(self.app, 'aba_cobranca'): 
+                        if getattr(self.app, 'aba_cobranca', None): 
                             self.app.aba_cobranca.cob_listar()
                     except mysql.connector.Error as err:
                         logging.error(f"Erro ao restaurar: {err}")

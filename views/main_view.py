@@ -27,9 +27,10 @@ ARQUIVO_PREFERENCIAS_UI = "ui_prefs.json"
 INTERVALO_CHECAGEM_BD_MS = 30000
 
 # Pasta na rede com a versão atualizada do sistema (ajuste para o caminho real).
-PASTA_ORIGEM_ATUALIZACAO = r"\\N_008279\Users\gabriel.costa\Documents\Projeto Gestão\dist"
-# Nunca copiados na atualização (são locais de cada máquina).
-ATUALIZACAO_IGNORAR = {"secret.key", "config.ini.enc", "ui_prefs.json", "app.log", "__pycache__"}
+PASTA_ORIGEM_ATUALIZACAO = r"\\N_008279\Users\gabriel.costa\Documents\Projeto Gestão\dist\SistemaDeGestao"
+# Nunca copiados na atualização (locais de cada máquina).
+ATUALIZACAO_IGNORAR = {"ui_prefs.json", "app.log", "__pycache__"}  # em qualquer pasta
+ATUALIZACAO_IGNORAR_INTERNAL = {"secret.key", "config.ini.enc"}  # só dentro de _internal
 
 class Aplicativo(ctk.CTk):
     def __init__(self, usuario_atual, perfil_atual, nome_atual=None,
@@ -169,7 +170,7 @@ class Aplicativo(ctk.CTk):
                     rel = os.path.relpath(raiz, origem)
                     os.makedirs(os.path.join(destino, rel), exist_ok=True)
                     for nome in arquivos:
-                        if nome in ATUALIZACAO_IGNORAR:
+                        if nome in ATUALIZACAO_IGNORAR or (nome in ATUALIZACAO_IGNORAR_INTERNAL and os.path.basename(raiz) == "_internal"):
                             continue
                         src, dst = os.path.join(raiz, nome), os.path.normpath(os.path.join(destino, rel, nome))
                         if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src) \
@@ -237,7 +238,7 @@ class Aplicativo(ctk.CTk):
         janela_sobre.transient(self)
 
         ctk.CTkLabel(janela_sobre, text="Sistema de Gestão", font=("Arial", 18, "bold")).pack(pady=(20, 5))
-        ctk.CTkLabel(janela_sobre, text="Versão 0.4.0", font=("Arial", 11), text_color="gray").pack(pady=(0, 15))
+        ctk.CTkLabel(janela_sobre, text="Versão 0.4.1", font=("Arial", 11), text_color="gray").pack(pady=(0, 15))
 
         texto_licenca = (
             "Este software é protegido por leis de direitos autorais.\n"

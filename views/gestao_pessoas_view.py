@@ -388,6 +388,18 @@ class AbaGestaoPessoas:
         var_todos = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(lista, text="Selecionar todos", variable=var_todos, command=_marcar_todos,
                         font=("Arial", 12, "bold")).pack(anchor="w", pady=(2, 6))
+        vt = {"procurador": ctk.BooleanVar(value=False), "apoio": ctk.BooleanVar(value=False)}
+
+        def _so_tipo(t):
+            for k, v in vt.items():
+                v.set(v.get() if k == t else False)
+            for c in self._colaboradores_filtrados():
+                vars_[c['id']].set(vt[t].get() and c['tipo'] == t)
+            _sync_todos()
+
+        for t, rot in (("procurador", "Somente procuradores"), ("apoio", "Somente apoio")):
+            ctk.CTkCheckBox(lista, text=rot, variable=vt[t], command=lambda t=t: _so_tipo(t),
+                            font=("Arial", 12, "bold")).pack(anchor="w", pady=(0, 6))
         for c in self._colaboradores_filtrados():
             vars_[c['id']] = ctk.BooleanVar(value=False)
             ctk.CTkCheckBox(lista, text=f"{c['nome']} ({'Proc.' if c['tipo'] == 'procurador' else 'Apoio'})",
@@ -427,7 +439,7 @@ class AbaGestaoPessoas:
         cab = ["Colaborador", "Tipo", "Aquisitivo", "Concessivo", "Direito", "Gozados", "Períodos férias",
                "Disponíveis", "Carência\nusada", "Períodos carência", "Carência\ndisp."]
         P = lambda t: Paragraph(str(t), ParagraphStyle('c', fontSize=8, leading=10))
-        linhas, estilos = [cab], [
+        est0 = [
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 8),
@@ -435,12 +447,15 @@ class AbaGestaoPessoas:
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ('LEFTPADDING', (0, 0), (-1, -1), 3), ('RIGHTPADDING', (0, 0), (-1, -1), 3)]
 
+        els = []
+
         def cor(i, col, bg):
             estilos.append(('BACKGROUND', (col, i), (col, i), colors.HexColor(bg)))
         try:
-            for c in self.colaboradores:
+            for c in sorted(self.colaboradores, key=lambda c: (c['tipo'] != 'procurador', c['nome'].lower())):
                 if c['id'] not in ids:
                     continue
+                linhas, estilos = [cab], list(est0)
                 proc = c['tipo'] == 'procurador'
                 base = [c['nome'], 'Procurador' if proc else 'Apoio']
                 pers = [p for p in self.periodos if p['colaborador_id'] == c['id']]
@@ -467,13 +482,14 @@ class AbaGestaoPessoas:
                     cor(i, 7, "#c6efce" if saldo > 10 else "#ffeb9c" if saldo > 0 else "#ffc7ce")
                     if proc:
                         cor(i, 10, "#c6efce" if cdisp > 3 else "#ffeb9c" if cdisp > 0 else "#ffc7ce")
+                t = Table(linhas, repeatRows=1, colWidths=[100, 52, 88, 88, 36, 42, 122, 54, 46, 122, 42])
+                t.setStyle(TableStyle(estilos))
+                els += [t, Spacer(1, 14)]
             st = getSampleStyleSheet()
-            t = Table(linhas, repeatRows=1, colWidths=[100, 52, 88, 88, 36, 42, 122, 54, 46, 122, 42])
-            t.setStyle(TableStyle(estilos))
             SimpleDocTemplate(caminho, pagesize=landscape(A4), leftMargin=25, rightMargin=25, topMargin=25, bottomMargin=25).build([
                 Paragraph("Relatório de Férias e Carência", st['Title']),
                 Paragraph(f"Gerado em {date.today():%d/%m/%Y} | Verde: folgado | Amarelo: atenção | Vermelho: esgotado", st['Normal']),
-                Spacer(1, 10), t])
+                Spacer(1, 10)] + els)
         except OSError as err:
             messagebox.showerror("Erro", f"Não foi possível salvar o relatório:\n{err}", parent=janela)
             return False
@@ -481,7 +497,10 @@ class AbaGestaoPessoas:
         return True
 
     def abrir_popup_ver_colaboradores(self):
-        janela = ctk.CTkToplevel(self.master)
+        if self._w_ok('_popup_ver_col'):
+            self._popup_ver_col.deiconify(); self._popup_ver_col.lift(); self._popup_ver_col.focus_force()
+            return
+        janela = self._popup_ver_col = ctk.CTkToplevel(self.master)
         janela.title("Colaboradores Cadastrados")
         janela.geometry("320x420")
         janela.transient(self.master)
@@ -542,15 +561,19 @@ class AbaGestaoPessoas:
             return
         for w in self.lst_colaboradores.winfo_children():
             w.destroy()
-        for c in self._colaboradores_filtrados():
-            if self._busca_colab and self._busca_colab not in c['nome'].lower():
+        for tipo, rot in (("procurador", "Procuradores"), ("apoio", "Apoio")):
+            cs = sorted((c for c in self._colaboradores_filtrados() if c['tipo'] == tipo
+                         and (not self._busca_colab or self._busca_colab in c['nome'].lower())),
+                        key=lambda c: c['nome'].lower())
+            if not cs:
                 continue
-            txt = f"{c['nome']} ({'Proc.' if c['tipo'] == 'procurador' else 'Apoio'})"
-            linha = ctk.CTkFrame(self.lst_colaboradores, fg_color="transparent")
-            linha.pack(fill="x", pady=1)
-            ctk.CTkLabel(linha, text=txt, anchor="w").pack(side="left", fill="x", expand=True)
-            ctk.CTkButton(linha, text="✏️", width=28,
-                          command=lambda cc=c: (self.selecionar_colaborador(cc), self.abrir_popup_colaborador_form())).pack(side="right")
+            ctk.CTkLabel(self.lst_colaboradores, text=rot, font=("Arial", 12, "bold")).pack(anchor="w", pady=(8, 2))
+            for c in cs:
+                linha = ctk.CTkFrame(self.lst_colaboradores, fg_color="transparent")
+                linha.pack(fill="x", pady=1)
+                ctk.CTkLabel(linha, text=c['nome'], anchor="w").pack(side="left", fill="x", expand=True)
+                ctk.CTkButton(linha, text="✏️", width=28,
+                              command=lambda cc=c: (self.selecionar_colaborador(cc), self.abrir_popup_colaborador_form())).pack(side="right")
 
     def selecionar_colaborador(self, c):
         self.colaborador_sel = c
@@ -590,10 +613,12 @@ class AbaGestaoPessoas:
         if not pers:
             return res
         ini = min(_as_date(q['concessivo_inicio']) for q in pers)
-        fer = sorted((_as_date(a['data_inicio']), _as_date(a['data_fim'])) for a in self.afastamentos
+        fer = sorted((_as_date(a['data_inicio']), _as_date(a['data_fim']) - timedelta(
+            days=10 if TAG_VENDA in (a.get('observacao') or '') and (_as_date(a['data_fim']) - _as_date(a['data_inicio'])).days >= 20 else 0))
+                     for a in self.afastamentos
                      if a['colaborador_id'] == cid and a['tipo_afastamento'] == "Férias"
                      and _as_date(a['data_inicio']) >= ini)
-        usado = {q['id']: 0 for q in pers}
+        usado = {q['id']: self._vendidos(q) for q in pers}
         for di, df in fer:
             for q in pers:
                 if di > df:
@@ -606,12 +631,16 @@ class AbaGestaoPessoas:
                 di += timedelta(days=n)
         return res
 
+    def _vendidos(self, p):
+        """Dias vendidos (abono) no período concessivo p."""
+        return 10 * sum(1 for x in self.afastamentos if x['colaborador_id'] == p['colaborador_id']
+                        and x['tipo_afastamento'] == "Férias" and TAG_VENDA in (x.get('observacao') or '')
+                        and _as_date(p['concessivo_inicio']) <= _as_date(x['data_inicio']) <= _as_date(p['concessivo_fim']))
+
     def _saldo_ferias(self, p):
         """Dias disponíveis e gozados do período p (abatimento do mais antigo para o mais novo)."""
         g = sum(n for _, _, n in self._ferias_por_periodo(p['colaborador_id']).get(p['id'], []))
-        v = 10 * sum(1 for x in self.afastamentos if x['colaborador_id'] == p['colaborador_id']
-                     and x['tipo_afastamento'] == "Férias" and TAG_VENDA in (x.get('observacao') or '')
-                     and _as_date(p['concessivo_inicio']) <= _as_date(x['data_inicio']) <= _as_date(p['concessivo_fim']))
+        v = self._vendidos(p)
         return DIAS_FERIAS_PERIODO - g - v, g
 
     def _popular_periodos(self):
